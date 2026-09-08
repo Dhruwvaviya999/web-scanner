@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -59,15 +60,20 @@ export function UserMenu() {
       </DropdownMenuTrigger>
 
       <DropdownMenuContent align="end" className="w-56">
-        <DropdownMenuLabel className="py-2">
-          <span className="block truncate text-sm font-medium text-foreground">{user.name}</span>
-          <span className="block truncate text-xs text-muted-foreground">{user.email}</span>
-        </DropdownMenuLabel>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem render={<Link href="/dashboard/profile" />}>
-          <UserRound aria-hidden />
-          Profile
-        </DropdownMenuItem>
+        {/* Base UI requires a GroupLabel to sit inside a Group — it labels the
+            group rather than floating in the popup. The account details and the
+            profile link are that group. */}
+        <DropdownMenuGroup>
+          <DropdownMenuLabel className="py-2">
+            <span className="block truncate text-sm font-medium text-foreground">{user.name}</span>
+            <span className="block truncate text-xs text-muted-foreground">{user.email}</span>
+          </DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem render={<Link href="/dashboard/profile" />}>
+            <UserRound aria-hidden />
+            Profile
+          </DropdownMenuItem>
+        </DropdownMenuGroup>
         <DropdownMenuSeparator />
         <DropdownMenuItem variant="destructive" onClick={handleLogout} disabled={signingOut}>
           <LogOut aria-hidden />

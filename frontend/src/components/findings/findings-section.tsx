@@ -15,8 +15,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import {
+  ACTIVE_CATEGORIES,
   CATEGORY_LABELS,
   FINDING_SEVERITIES,
+  parameterFromSubject,
   type Finding,
   type FindingListResponse,
   type FindingSeverity,
@@ -108,6 +110,7 @@ function AffectedEndpoints({ finding }: { finding: Finding }) {
 function FindingRow({ finding }: { finding: Finding }) {
   const [open, setOpen] = useState(false);
   const panelId = `finding-panel-${finding.id}`;
+  const parameter = parameterFromSubject(finding.subject);
 
   return (
     <div className="border-b border-border last:border-b-0">
@@ -129,6 +132,11 @@ function FindingRow({ finding }: { finding: Finding }) {
                 <span className="font-mono">
                   {finding.endpoint.method} {finding.endpoint.path}
                 </span>
+              </>
+            ) : null}
+            {parameter ? (
+              <>
+                {" · "}parameter <span className="font-mono">{parameter}</span>
               </>
             ) : null}
             {finding.occurrence_count > 1 ? (
@@ -154,9 +162,22 @@ function FindingRow({ finding }: { finding: Finding }) {
             <Badge variant="outline" className="border-border text-muted-foreground">
               {CATEGORY_LABELS[finding.category]}
             </Badge>
-            {finding.subject ? (
+            {parameter ? (
+              <Badge variant="outline" className="border-border text-muted-foreground">
+                parameter <span className="ml-1 font-mono text-foreground">{parameter}</span>
+              </Badge>
+            ) : finding.subject ? (
               <Badge variant="outline" className="border-border font-mono text-muted-foreground">
                 {finding.subject}
+              </Badge>
+            ) : null}
+            {ACTIVE_CATEGORIES.has(finding.category) ? (
+              <Badge
+                variant="outline"
+                className="border-primary/40 bg-primary/10 text-primary"
+                title="Confirmed by sending an inert marker and observing the response"
+              >
+                actively tested
               </Badge>
             ) : null}
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">

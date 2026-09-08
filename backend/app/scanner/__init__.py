@@ -16,6 +16,7 @@ from app.scanner.crawler.types import (
     ParameterLocation,
 )
 from app.scanner.response_analyzer import analyze_response, extract_page_title
+from app.scanner.vulnerabilities.xss.detector import XssConfig
 from app.scanner.security.types import (
     FindingCategory,
     FindingConfidence,
@@ -36,6 +37,7 @@ from app.scanner.url_validator import parse_target_url
 
 __all__ = [
     "CrawlConfig",
+    "XssConfig",
     "CrawlResult",
     "DiscoveredEndpoint",
     "DiscoveredForm",

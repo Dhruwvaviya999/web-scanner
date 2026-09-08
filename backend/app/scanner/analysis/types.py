@@ -95,6 +95,10 @@ class AnalysisResult:
 
     endpoint_analyses: list[EndpointAnalysis] = field(default_factory=list)
     findings: list[AggregatedFinding] = field(default_factory=list)
+    #: Ungrouped `(endpoint_url, finding)` pairs. Kept so a later detector can
+    #: add its own observations and re-aggregate over the combined set, rather
+    #: than maintaining a separate finding path.
+    observations: list[tuple[str | None, "FindingData"]] = field(default_factory=list)
 
     def count(self, status: EndpointAnalysisStatus) -> int:
         return sum(1 for analysis in self.endpoint_analyses if analysis.status is status)

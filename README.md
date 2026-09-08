@@ -2,15 +2,20 @@
 
 A web application for running and tracking HTTP reconnaissance scans against sites you own.
 
-**This is the Phase 5 release: security-configuration analysis across a discovered attack
-surface.** It provides authentication, scan management, a bounded HTTP probe, a bounded
-same-origin crawler, and security-header and cookie analysis of **every endpoint the crawl
-reached** — with findings deduplicated by rule identity, linked to the endpoints they affect, and
-reported alongside explicit coverage numbers.
+**This is the Phase 6 release: security-configuration analysis plus the first active
+vulnerability detector.** It provides authentication, scan management, a bounded HTTP probe, a
+bounded same-origin crawler, security-header and cookie analysis of every endpoint the crawl
+reached, and **reflected cross-site-scripting detection** on discovered query parameters — all
+deduplicated by rule identity, linked to the endpoints they affect, and reported with explicit
+coverage numbers.
 
-**It performs no vulnerability testing.** No payloads are sent and no form is ever submitted.
-There is no TLS inspection, no XSS, SQL-injection, CSRF, SSRF or IDOR testing, no CORS analysis
-and no risk scoring.
+Active testing is limited to **reflected XSS on GET query parameters**, using an inert marker.
+There is no stored or DOM XSS detection, no SQL-injection, CSRF, SSRF or IDOR testing, no TLS
+inspection, no CORS analysis, no form submission and no risk scoring.
+
+> **A clean result does not prove an application is secure.** A static reflected-XSS detector
+> misses application-specific cases by construction — anything requiring authentication, a form
+> submission, a second request, or JavaScript to manifest is invisible to it.
 
 > The scanner currently performs basic HTTP and security-configuration analysis. **It does not
 > guarantee that a website is secure.** A scan with no findings means the specific checks listed
@@ -76,7 +81,8 @@ web-scanner/
 │   │       ├── 0002_scan_response_analysis.py
 │   │       ├── 0003_findings.py
 │   │       ├── 0004_attack_surface.py
-│   │       └── 0005_scan_intelligence.py
+│   │       ├── 0005_scan_intelligence.py
+│   │       └── 0006_xss_category.py
 │   └── app/
 │       ├── main.py                    # app wiring, CORS, exception handlers
 │       ├── core/
@@ -106,6 +112,14 @@ web-scanner/
 │           │   ├── endpoint_analyzer.py  # eligibility + per-endpoint run (pure)
 │           │   ├── aggregator.py      # deduplication by rule identity (pure)
 │           │   └── module.py          # glue: captured responses -> findings
+│           ├── vulnerabilities/       # active detectors
+│           │   └── xss/
+│           │       ├── types.py       # contexts, encoding states, probe
+│           │       ├── payloads.py    # inert marker generation
+│           │       ├── analyzer.py    # context + encoding analysis (pure)
+│           │       ├── findings.py    # severity/confidence rules (pure)
+│           │       ├── detector.py    # probe strategy, injectable fetcher
+│           │       └── module.py      # glue: transport -> observations
 │           └── crawler/               # attack-surface discovery
 │               ├── types.py           # CrawlConfig + discovered resources
 │               ├── url_normalizer.py  # normalisation + same-origin rules (pure)
@@ -249,7 +263,7 @@ Always change the schema through a migration; never edit the database by hand.
 
 ```bash
 cd backend
-.venv\Scripts\python -m pytest          # 168 tests
+.venv\Scripts\python -m pytest          # 231 tests
 ```
 
 | Suite | Covers |
@@ -262,6 +276,9 @@ cd backend
 | `test_finding_identity.py` | Rule identity and deduplication |
 | `test_endpoint_analysis.py` | Eligibility, coverage, failure isolation |
 | `test_finding_association.py` | Finding-to-endpoint linking and cascade behaviour |
+| `test_xss_analyzer.py` | Reflection contexts, encoding, false-positive control |
+| `test_xss_detector.py` | Probe budget, scope, non-HTML skipping, failure handling |
+| `test_xss_integration.py` | XSS findings inside the existing finding architecture |
 | `test_findings_api.py` | Findings API ownership and isolation |
 | `test_attack_surface_api.py` | Endpoint/form API ownership and isolation |
 
@@ -734,6 +751,102 @@ score** — a single number would imply a confidence this scanner has not earned
 
 ---
 
+## Reflected XSS detection (Phase 6)
+
+The first active detector. It consumes the query parameters the crawler discovered and tests
+whether their values come back into the page in a form a browser could act on.
+
+### The marker is inert
+
+The scanner never sends a working exploit. It sends a random token, four metacharacters, and a
+second token:
+
+```
+ws4f1a9c3e0b7da"'><ws4f1a9c3e0b7db
+└── open ────────┘└──┘└─ close ───┘
+                 canary
+```
+
+No `<script>`, no event handler, no `javascript:` — nothing that does anything if the target
+renders it. What it reveals is which of `"`, `'`, `>` and `<` survive the application's output
+encoding, and that is the evidence everything else reasons about.
+
+**Why the canary is bracketed:** whatever the application rendered for those four characters is
+*exactly* the text between the two markers. Without brackets, a page that strips the canary would
+leave the marker sitting against its own markup, and the `<` of a following `</div>` could be
+misread as a surviving metacharacter. This is a real false positive that the bracketing removes
+by construction, and there is a test for it.
+
+### Request budget
+
+Per parameter:
+
+| Case | Requests |
+| ---- | -------- |
+| Parameter is not reflected | **1** — a baseline with an inert alphanumeric token. If it does not come back, the probe is never sent |
+| Parameter is reflected | **2** — baseline, then the encoding probe |
+
+No payload lists, no mutation, no retries. Caps: `XSS_MAX_PARAMETERS_PER_ENDPOINT` (8),
+`XSS_MAX_ENDPOINTS` (25), `XSS_MAX_REQUESTS_PER_SCAN` (80). `XSS_ENABLED=false` turns it off.
+
+### Context analysis
+
+A deterministic single-pass scan of the markup — **not a browser, and no JavaScript is executed**
+— locates the marker and classifies where it landed:
+
+`HTML_TEXT`, `ATTRIBUTE_QUOTED`, `ATTRIBUTE_UNQUOTED`, `EVENT_HANDLER`, `JAVASCRIPT_URI`,
+`SCRIPT`, `STYLE`, `HTML_COMMENT`. Inside `<script>`, it also identifies the enclosing string
+delimiter, so it can tell whether the canary's quote would break out of it.
+
+### Severity and confidence
+
+**Encoding decides first.** If every metacharacter came back encoded or stripped, there is *no
+finding* — in any context.
+
+| Context | Escapes its construct? | Severity | Confidence |
+| ------- | ---------------------- | -------- | ---------- |
+| Script / event handler / `javascript:` | yes | HIGH | HIGH |
+| Script / event handler / `javascript:` | no | HIGH | MEDIUM |
+| Unquoted attribute | — | HIGH | MEDIUM |
+| Quoted attribute | quote survived | HIGH | MEDIUM |
+| Quoted attribute | quote encoded | MEDIUM | LOW |
+| HTML text | raw `<` present | HIGH | MEDIUM |
+| HTML text | no raw `<` | MEDIUM | LOW |
+| HTML comment | yes | INFO | LOW |
+| HTML comment | no | *no finding* | — |
+| Anything, safely encoded | — | *no finding* | — |
+
+**Nothing is ever CRITICAL**, and a test enforces it. Confidence reaches HIGH only when the
+marker demonstrably escapes its enclosing construct. "The bytes are here" is weaker evidence than
+"a browser runs this", and the wording of every finding reflects that: findings say an attacker
+*may be able to*, never that execution was confirmed.
+
+### What is not stored
+
+The probe marker, the canary and the probe URLs exist only in memory during the scan. Evidence
+names the parameter and the context — never a value:
+
+```
+A controlled scanner marker supplied in the "q" query parameter was reflected into the
+"value" attribute. Metacharacters returned unencoded: `"` `'` `>` `<`.
+```
+
+Finding subjects are `parameter:<name>`, so two parameters stay distinguishable while the same
+parameter across several endpoints aggregates into one finding with several occurrences.
+
+### Scope
+
+Probes reuse the same transport as everything else, so every existing protection applies
+unchanged: URL validation, the SSRF guard, the same-origin lock (re-checked on every redirect),
+the request timeout and the redirect limit. Probe URLs are built by substituting one known
+parameter's value into an already-validated endpoint — the scheme, host and path are never taken
+from anything the target controls.
+
+Only GET query parameters are tested. Forms are discovered but never submitted, and path
+parameters are not tested.
+
+---
+
 ## API overview
 
 All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
@@ -847,10 +960,19 @@ the server and mirrored by Zod in the browser; the server is authoritative.
   carry MEDIUM confidence.
 * **Only cookies set on the scanned response are seen.** Cookies set after login, or by
   JavaScript, are invisible to this scanner.
-* **Still no active vulnerability testing.** The scanner performs security-*configuration*
-  analysis. It does not detect XSS, SQL injection, CSRF, SSRF, IDOR or any other injectable
-  class, and sends no payloads. A clean result means these configuration checks found nothing —
-  not that the application is free of vulnerabilities.
+* **Only one vulnerability class is actively tested.** Reflected XSS on GET query parameters.
+  There is no SQL-injection, CSRF, SSRF, IDOR or open-redirect testing.
+* **No stored XSS.** A payload that is saved and rendered on a later request is never seen: the
+  detector only compares one response to the request that produced it.
+* **No DOM XSS, no JavaScript execution, no browser engine.** The analysis is static. A sink
+  reached only by client-side script — `innerHTML`, `document.write`, a framework template — is
+  invisible. This is the largest blind spot of the current design.
+* **No form submission**, so POST parameters and anything behind a form are untested.
+* **Path parameters are not tested** — `/products/1` is not probed as an input.
+* **Reflection is judged on one response.** An application that encodes differently depending on
+  session state, `Accept` header or feature flag may be assessed on only one of its behaviours.
+* **Absence of XSS findings does not prove the absence of XSS.** A static reflected-XSS detector
+  misses application-specific cases by construction.
 * **Analysis covers only what the crawler reached.** Pages behind a login, behind a form, or
   built by JavaScript are never seen, so they are neither analysed nor counted as skipped.
 * **Cookies are only observed where they are set.** A cookie issued after authentication is
@@ -893,10 +1015,11 @@ Planned, in order. Everything from Phase 3 onward is unimplemented.
 | 2 | Response analysis: page title, content type, size, redirect chain | done |
 | 3 | `Finding` model, security-header and cookie analysis | done |
 | 4 | Crawler, endpoint / parameter / form discovery | done |
-| 5 | Per-endpoint analysis, finding identity, deduplication, coverage | **done - current release** |
-| 6 | TLS inspection, CORS policy, risk scoring | planned |
-| 7 | Active testing: XSS, SQL injection, open redirect, API security checks | planned |
-| 8 | Reporting and export, background execution for long-running scans | planned |
+| 5 | Per-endpoint analysis, finding identity, deduplication, coverage | done |
+| 6 | Reflected XSS detection on query parameters | **done - current release** |
+| 7 | TLS inspection, CORS policy, risk scoring | planned |
+| 8 | Further active testing: SQL injection, open redirect, API security checks | planned |
+| 9 | Reporting and export, background execution for long-running scans | planned |
 
 The attack surface discovered in Phase 4 is what later detectors will consume: endpoints and
 their parameters are the injection points an XSS or SQL-injection check needs, and forms are

@@ -13,6 +13,8 @@ import asyncio
 import logging
 
 from app.scanner.analysis.module import EndpointAnalysisModule
+from app.scanner.vulnerabilities.xss.detector import XssConfig
+from app.scanner.vulnerabilities.xss.module import ReflectedXssModule
 from app.scanner.crawler.module import CrawlModule
 from app.scanner.crawler.types import CrawlConfig
 from app.scanner.http_scanner import HttpProbeModule
@@ -34,9 +36,11 @@ class WebScanner:
         config: ScannerConfig | None = None,
         modules: list[ScanModule] | None = None,
         crawl_config: CrawlConfig | None = None,
+        xss_config: XssConfig | None = None,
     ) -> None:
         self._config = config or ScannerConfig()
         self._crawl_config = crawl_config or CrawlConfig()
+        self._xss_config = xss_config or XssConfig()
         # Order matters: the probe fetches, then the detectors interpret what it
         # fetched. Later phases append further modules to this list.
         self._modules: list[ScanModule] = (
@@ -49,6 +53,9 @@ class WebScanner:
                 HttpProbeModule(self._config),
                 CrawlModule(self._config, self._crawl_config),
                 EndpointAnalysisModule(),
+                # Active probing runs last: it needs the discovered parameters,
+                # and its findings join the same aggregation.
+                ReflectedXssModule(self._config, self._xss_config),
             ]
         )
 

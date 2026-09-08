@@ -19,7 +19,24 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from app.scanner.analysis.types import AggregatedFinding, FindingOccurrence
-from app.scanner.security.types import FindingData, sort_findings
+from app.scanner.security.types import (
+    SEVERITY_ORDER,
+    FindingConfidence,
+    FindingData,
+    sort_findings,
+)
+
+#: Higher confidence sorts first, matching SEVERITY_ORDER's convention.
+_CONFIDENCE_ORDER = {
+    FindingConfidence.HIGH: 0,
+    FindingConfidence.MEDIUM: 1,
+    FindingConfidence.LOW: 2,
+}
+
+
+def _weight(data: FindingData) -> tuple[int, int]:
+    """Sort key for choosing which observation represents a group."""
+    return (SEVERITY_ORDER[data.severity], _CONFIDENCE_ORDER[data.confidence])
 
 
 def aggregate_findings(
@@ -46,8 +63,15 @@ def aggregate_findings(
             )
             continue
 
-        # Same rule and subject seen again. Record the endpoint, but only once:
-        # a rule can only fail one way per endpoint, so a repeat is noise.
+        # Same rule and subject seen again. The group is represented by its
+        # most severe observation, not merely the first one seen — otherwise a
+        # parameter that is MEDIUM on one endpoint and HIGH on another would be
+        # reported at whichever grade happened to be encountered first.
+        if _weight(data) < _weight(existing.data):
+            existing.data = data
+
+        # Record the endpoint, but only once: a rule can only fail one way per
+        # endpoint, so a repeat is noise.
         if any(o.endpoint_url == endpoint_url for o in existing.occurrences):
             continue
 

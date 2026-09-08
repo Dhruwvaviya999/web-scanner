@@ -20,6 +20,7 @@ from app.models.scan import Scan, ScanStatus
 from app.models.user import User
 from app.scanner import CrawlConfig, ScannerConfig, ScanReport, WebScanner
 from app.scanner.security.types import FindingSeverity
+from app.scanner.vulnerabilities.xss.detector import XssConfig
 from app.services import attack_surface_service, finding_service
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,15 @@ def _crawl_config() -> CrawlConfig:
     )
 
 
+def _xss_config() -> XssConfig:
+    return XssConfig(
+        enabled=settings.XSS_ENABLED,
+        max_parameters_per_endpoint=settings.XSS_MAX_PARAMETERS_PER_ENDPOINT,
+        max_requests_per_scan=settings.XSS_MAX_REQUESTS_PER_SCAN,
+        max_endpoints=settings.XSS_MAX_ENDPOINTS,
+    )
+
+
 def create_scan(db: Session, user: User, target_url: str) -> Scan:
     """Persist a scan, run the probe, then store the outcome.
 
@@ -66,9 +76,9 @@ def create_scan(db: Session, user: User, target_url: str) -> Scan:
     scan.started_at = datetime.now(UTC)
     db.commit()
 
-    report = WebScanner(_scanner_config(), crawl_config=_crawl_config()).scan_sync(
-        target_url
-    )
+    report = WebScanner(
+        _scanner_config(), crawl_config=_crawl_config(), xss_config=_xss_config()
+    ).scan_sync(target_url)
     _apply_report(scan, report)
 
     # Findings are written in the same transaction as the scan result, so a

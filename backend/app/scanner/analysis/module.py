@@ -44,6 +44,7 @@ class EndpointAnalysisModule:
             if analysis.status is EndpointAnalysisStatus.ANALYZED:
                 observations.extend((url, finding) for finding in analysis.findings)
 
+        result.observations = observations
         result.findings = aggregate_findings(observations)
 
         report.analysis = result

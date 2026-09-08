@@ -3,6 +3,7 @@ export const FINDING_CONFIDENCES = ["HIGH", "MEDIUM", "LOW"] as const;
 export const FINDING_CATEGORIES = [
   "SECURITY_HEADER",
   "COOKIE",
+  "XSS",
   "TLS",
   "INFORMATION_DISCLOSURE",
   "OTHER",
@@ -74,7 +75,21 @@ export interface FindingListResponse {
 export const CATEGORY_LABELS: Record<FindingCategory, string> = {
   SECURITY_HEADER: "Security header",
   COOKIE: "Cookie",
+  XSS: "Cross-site scripting",
   TLS: "TLS",
   INFORMATION_DISCLOSURE: "Information disclosure",
   OTHER: "Other",
 };
+
+/**
+ * A finding's subject is a stable `kind:value` string, e.g. `parameter:q`.
+ * Returns the parameter name when the subject names one, else null.
+ */
+export function parameterFromSubject(subject: string | null): string | null {
+  if (!subject) return null;
+  const [kind, ...rest] = subject.split(":");
+  return kind === "parameter" && rest.length > 0 ? rest.join(":") : null;
+}
+
+/** Categories that represent an actively tested vulnerability class. */
+export const ACTIVE_CATEGORIES: ReadonlySet<FindingCategory> = new Set<FindingCategory>(["XSS"]);

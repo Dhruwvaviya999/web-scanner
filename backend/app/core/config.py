@@ -86,6 +86,14 @@ class Settings(BaseSettings):
     CRAWLER_TIME_BUDGET_SECONDS: float = Field(default=90.0, gt=0)
     CRAWLER_MAX_REDIRECTS_PER_PAGE: int = Field(default=3, ge=0, le=10)
 
+    # --- Reflected XSS detection (phase 6) ---
+    # Active probing: sends inert markers to discovered query parameters.
+    # Only ever targets URLs already inside the authorised scan scope.
+    XSS_ENABLED: bool = True
+    XSS_MAX_PARAMETERS_PER_ENDPOINT: int = Field(default=8, gt=0, le=50)
+    XSS_MAX_REQUESTS_PER_SCAN: int = Field(default=80, gt=0, le=1000)
+    XSS_MAX_ENDPOINTS: int = Field(default=25, gt=0, le=200)
+
     @field_validator("JWT_SECRET_KEY")
     @classmethod
     def _reject_placeholder_secret(cls, value: str) -> str:

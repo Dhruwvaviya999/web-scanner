@@ -52,6 +52,8 @@ class FindingCategory(str, enum.Enum):
 
     SECURITY_HEADER = "SECURITY_HEADER"
     COOKIE = "COOKIE"
+    #: Cross-site scripting. Phase 6 emits only reflected XSS.
+    XSS = "XSS"
     TLS = "TLS"
     INFORMATION_DISCLOSURE = "INFORMATION_DISCLOSURE"
     OTHER = "OTHER"
@@ -81,6 +83,10 @@ class FindingRule(str, enum.Enum):
     SECURITY_HEADER_X_FRAME_OPTIONS_MISSING = "SECURITY_HEADER_X_FRAME_OPTIONS_MISSING"
     SECURITY_HEADER_REFERRER_POLICY_MISSING = "SECURITY_HEADER_REFERRER_POLICY_MISSING"
     SECURITY_HEADER_PERMISSIONS_POLICY_MISSING = "SECURITY_HEADER_PERMISSIONS_POLICY_MISSING"
+
+    # --- Injection ---
+    #: Reflected cross-site scripting. Active detection, inert marker only.
+    XSS_REFLECTED = "XSS_REFLECTED"
 
     # --- Cookies ---
     COOKIE_SECURE_MISSING = "COOKIE_SECURE_MISSING"

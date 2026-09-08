@@ -179,7 +179,42 @@ def test_every_legacy_code_maps_to_a_real_rule():
     """The 0005 migration relies on this mapping being complete and valid."""
     from app.scanner.security.types import LEGACY_CODE_TO_RULE
 
-    assert len(LEGACY_CODE_TO_RULE) == len(list(FindingRule))
+    # Every phase-3 code maps to a rule that still exists. Rules added later
+    # (XSS_REFLECTED, and anything after it) have no legacy code by design, so
+    # the mapping is a subset rather than a bijection.
+    assert set(LEGACY_CODE_TO_RULE.values()) <= set(FindingRule)
     assert all(isinstance(rule, FindingRule) for rule in LEGACY_CODE_TO_RULE.values())
     # No two legacy codes collapse onto the same rule.
     assert len(set(LEGACY_CODE_TO_RULE.values())) == len(LEGACY_CODE_TO_RULE)
+
+
+def test_group_is_represented_by_its_most_severe_observation():
+    """Order of discovery must not decide how a grouped finding is graded."""
+    low = dataclasses.replace(
+        make(FindingRule.XSS_REFLECTED, subject="parameter:q"),
+        severity=FindingSeverity.MEDIUM,
+        confidence=FindingConfidence.LOW,
+        evidence="reflected in HTML text",
+    )
+    high = dataclasses.replace(
+        make(FindingRule.XSS_REFLECTED, subject="parameter:q"),
+        severity=FindingSeverity.HIGH,
+        confidence=FindingConfidence.HIGH,
+        evidence="reflected in an inline script",
+    )
+
+    # Whichever arrives first, the group is graded by the worse case.
+    for observations in (
+        [("https://x/a", low), ("https://x/b", high)],
+        [("https://x/b", high), ("https://x/a", low)],
+    ):
+        grouped = aggregate_findings(observations)
+        assert len(grouped) == 1
+        assert grouped[0].data.severity is FindingSeverity.HIGH
+        assert grouped[0].data.confidence is FindingConfidence.HIGH
+        assert grouped[0].occurrence_count == 2
+        # Each occurrence still carries the evidence observed at that endpoint.
+        assert {o.evidence for o in grouped[0].occurrences} == {
+            "reflected in HTML text",
+            "reflected in an inline script",
+        }
