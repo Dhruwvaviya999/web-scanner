@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
 
+from app.scanner.analysis.types import AnalysisResult
 from app.scanner.crawler.types import CrawlResult
 from app.scanner.security.types import FindingData
 
@@ -109,6 +110,8 @@ class ScanReport:
     findings: list["FindingData"] = field(default_factory=list)
     #: Attack surface discovered by the crawler, when it ran.
     crawl: "CrawlResult | None" = None
+    #: Per-endpoint analysis and the aggregated findings it produced.
+    analysis: "AnalysisResult | None" = None
     error_code: ScanErrorCode | None = None
     error_message: str | None = None
     # Reserved for later phases: discovered endpoints, risk score.

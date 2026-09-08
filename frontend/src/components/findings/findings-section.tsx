@@ -10,6 +10,7 @@ import {
   SeverityDot,
 } from "@/components/findings/severity-badge";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -63,6 +64,47 @@ function FindingDetail({ label, children }: { label: string; children: string })
   );
 }
 
+function AffectedEndpoints({ finding }: { finding: Finding }) {
+  const [expanded, setExpanded] = useState(false);
+  const withUrl = finding.occurrences.filter((o) => o.endpoint_url !== null);
+
+  if (withUrl.length === 0) return null;
+
+  // A single endpoint is already named in the header; listing it again is noise.
+  if (withUrl.length === 1) {
+    return (
+      <div className="space-y-1">
+        <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+          Affected endpoint
+        </p>
+        <p className="font-mono text-sm break-all">{withUrl[0].endpoint_url}</p>
+      </div>
+    );
+  }
+
+  const shown = expanded ? withUrl : withUrl.slice(0, 5);
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+        Affected endpoints: {withUrl.length}
+      </p>
+      <ul className="space-y-1">
+        {shown.map((occurrence) => (
+          <li key={occurrence.id} className="font-mono text-xs break-all text-muted-foreground">
+            {occurrence.endpoint_url}
+          </li>
+        ))}
+      </ul>
+      {withUrl.length > 5 ? (
+        <Button variant="ghost" size="sm" onClick={() => setExpanded((value) => !value)}>
+          {expanded ? "Show fewer" : `Show all ${withUrl.length}`}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 function FindingRow({ finding }: { finding: Finding }) {
   const [open, setOpen] = useState(false);
   const panelId = `finding-panel-${finding.id}`;
@@ -79,8 +121,19 @@ function FindingRow({ finding }: { finding: Finding }) {
         <SeverityDot severity={finding.severity} />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-medium">{finding.title}</span>
-          <span className="mt-0.5 block text-xs text-muted-foreground">
+          <span className="mt-0.5 block truncate text-xs text-muted-foreground">
             {CATEGORY_LABELS[finding.category]}
+            {finding.endpoint ? (
+              <>
+                {" · "}
+                <span className="font-mono">
+                  {finding.endpoint.method} {finding.endpoint.path}
+                </span>
+              </>
+            ) : null}
+            {finding.occurrence_count > 1 ? (
+              <> {" · "}{finding.occurrence_count} endpoints affected</>
+            ) : null}
           </span>
         </span>
         <SeverityBadge severity={finding.severity} />
@@ -101,8 +154,13 @@ function FindingRow({ finding }: { finding: Finding }) {
             <Badge variant="outline" className="border-border text-muted-foreground">
               {CATEGORY_LABELS[finding.category]}
             </Badge>
+            {finding.subject ? (
+              <Badge variant="outline" className="border-border font-mono text-muted-foreground">
+                {finding.subject}
+              </Badge>
+            ) : null}
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
-              {finding.code}
+              {finding.rule_id}
             </code>
           </div>
 
@@ -119,6 +177,8 @@ function FindingRow({ finding }: { finding: Finding }) {
 
           <FindingDetail label="Impact">{finding.impact}</FindingDetail>
           <FindingDetail label="Remediation">{finding.remediation}</FindingDetail>
+
+          <AffectedEndpoints finding={finding} />
         </div>
       ) : null}
     </div>
@@ -169,8 +229,9 @@ export function FindingsSection({ data, loading, error, scanFailed }: FindingsSe
               {/* Deliberately not "this site is secure": only security headers and
                   cookies were examined, and only on a single response. */}
               <p className="text-muted-foreground">
-                This scan examined security headers and cookies on one HTTP response. That is a
-                narrow set of checks — it is not an assessment of whether the site is secure.
+                This scan examined security headers and cookies on the endpoints it reached.
+                That is a narrow set of checks — it is not an assessment of whether the site is
+                secure.
               </p>
             </div>
           </div>
@@ -179,7 +240,8 @@ export function FindingsSection({ data, loading, error, scanFailed }: FindingsSe
             <SummaryRow summary={data.summary} />
             <p className="text-sm text-muted-foreground">
               {data.summary.total} finding{data.summary.total === 1 ? "" : "s"} from security
-              header and cookie checks. Select one for evidence and remediation.
+              header and cookie checks across the analysed endpoints. Repeats of the same rule are
+              grouped; select one for evidence, remediation and every endpoint it affects.
             </p>
             <div className="rounded-lg border border-border px-3">
               {data.items.map((finding) => (

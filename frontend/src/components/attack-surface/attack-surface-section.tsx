@@ -76,6 +76,22 @@ function EndpointRow({ endpoint }: { endpoint: Endpoint }) {
         ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-2">
+        {endpoint.analysis_status === "ANALYZED" ? (
+          <span className="text-xs text-success" title="Security checks were run on this endpoint">
+            analysed
+          </span>
+        ) : endpoint.analysis_status === "FAILED" ? (
+          <span className="text-xs text-warning" title={endpoint.analysis_error ?? undefined}>
+            failed
+          </span>
+        ) : endpoint.analysis_status === "SKIPPED" ? (
+          <span
+            className="text-xs text-muted-foreground"
+            title={endpoint.skip_reason ?? undefined}
+          >
+            skipped
+          </span>
+        ) : null}
         <span className="text-xs text-muted-foreground">d{endpoint.depth}</span>
         <span
           className={cn(
@@ -196,6 +212,37 @@ export function AttackSurfaceSection({
                 value={parameterNames.length}
                 label="Parameters"
               />
+            </div>
+
+            {/* Coverage: how much of what was discovered actually got assessed.
+                Stated plainly so an incomplete scan is never mistaken for a
+                clean one. */}
+            <div className="rounded-md border border-border bg-muted/30 px-4 py-3 text-sm">
+              <p className="font-medium">Analysis coverage</p>
+              <p className="mt-1 text-muted-foreground">
+                {summary?.endpoints ?? 0} endpoint
+                {(summary?.endpoints ?? 0) === 1 ? "" : "s"} discovered
+                {summary?.endpoints_analyzed !== null &&
+                summary?.endpoints_analyzed !== undefined ? (
+                  <>
+                    {" · "}
+                    <span className="text-success">{summary.endpoints_analyzed} analysed</span>
+                    {(summary.endpoints_skipped ?? 0) > 0 ? (
+                      <>{" · "}{summary.endpoints_skipped} skipped</>
+                    ) : null}
+                    {(summary.endpoints_failed ?? 0) > 0 ? (
+                      <>
+                        {" · "}
+                        <span className="text-warning">
+                          {summary.endpoints_failed} could not be analysed
+                        </span>
+                      </>
+                    ) : null}
+                  </>
+                ) : (
+                  <> · not yet analysed</>
+                )}
+              </p>
             </div>
 
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">

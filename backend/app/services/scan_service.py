@@ -19,6 +19,7 @@ from app.core.errors import NotFoundError
 from app.models.scan import Scan, ScanStatus
 from app.models.user import User
 from app.scanner import CrawlConfig, ScannerConfig, ScanReport, WebScanner
+from app.scanner.security.types import FindingSeverity
 from app.services import attack_surface_service, finding_service
 
 logger = logging.getLogger(__name__)
@@ -72,13 +73,52 @@ def create_scan(db: Session, user: User, target_url: str) -> Scan:
 
     # Findings are written in the same transaction as the scan result, so a
     # scan is never left COMPLETED with its findings missing.
-    finding_service.replace_findings(db, scan, report.findings)
-    attack_surface_service.replace_attack_surface(db, scan, report.crawl)
+    # Order matters: endpoints must exist and be flushed before findings can be
+    # linked to them, and the analysis outcome is recorded onto those same rows.
+    endpoints_by_url = attack_surface_service.replace_attack_surface(db, scan, report.crawl)
+    attack_surface_service.apply_analysis(db, endpoints_by_url, report.analysis)
+
+    aggregated = report.analysis.findings if report.analysis else []
+    finding_service.replace_findings(db, scan, aggregated, endpoints_by_url)
+    _apply_summary(scan, report)
 
     scan.completed_at = datetime.now(UTC)
     db.commit()
     db.refresh(scan)
     return scan
+
+
+def _apply_summary(scan: Scan, report: ScanReport) -> None:
+    """Write the scan's denormalised coverage and severity counters.
+
+    Deterministic: every number is derived from what the pipeline produced in
+    this run, never from a previous scan or a heuristic. Counters stay NULL when
+    the corresponding stage did not run, so "not attempted" remains
+    distinguishable from "attempted and found nothing".
+    """
+    if report.crawl is not None:
+        scan.endpoints_discovered = len(report.crawl.endpoints)
+        scan.forms_discovered = len(report.crawl.forms)
+        # Distinct names: one parameter seen on five endpoints is one input.
+        scan.parameters_discovered = len(
+            {name for endpoint in report.crawl.endpoints for name in endpoint.parameters}
+        )
+
+    if report.analysis is not None:
+        scan.endpoints_analyzed = report.analysis.analyzed
+        scan.endpoints_skipped = report.analysis.skipped
+        scan.endpoints_failed = report.analysis.failed
+
+        counts = {severity: 0 for severity in FindingSeverity}
+        for group in report.analysis.findings:
+            counts[group.data.severity] += 1
+
+        scan.total_findings = len(report.analysis.findings)
+        scan.critical_count = counts[FindingSeverity.CRITICAL]
+        scan.high_count = counts[FindingSeverity.HIGH]
+        scan.medium_count = counts[FindingSeverity.MEDIUM]
+        scan.low_count = counts[FindingSeverity.LOW]
+        scan.info_count = counts[FindingSeverity.INFO]
 
 
 def _apply_report(scan: Scan, report: ScanReport) -> None:

@@ -13,11 +13,29 @@ export type FindingSeverity = (typeof FINDING_SEVERITIES)[number];
 export type FindingConfidence = (typeof FINDING_CONFIDENCES)[number];
 export type FindingCategory = (typeof FINDING_CATEGORIES)[number];
 
+/** Minimal endpoint context carried on a finding. */
+export interface FindingEndpointRef {
+  id: string;
+  url: string;
+  method: string;
+  path: string;
+}
+
+/** One endpoint a finding was observed on. */
+export interface FindingOccurrence {
+  id: string;
+  endpoint_id: string | null;
+  endpoint_url: string | null;
+  evidence: string;
+}
+
 export interface Finding {
   id: string;
   scan_id: string;
-  /** Stable identifier of the rule that fired, e.g. "missing_csp". */
-  code: string;
+  /** Stable rule identity, e.g. "SECURITY_HEADER_CSP_MISSING". The dedup key. */
+  rule_id: string;
+  /** What the finding is about within its rule, such as a cookie name. */
+  subject: string | null;
   title: string;
   category: FindingCategory;
   severity: FindingSeverity;
@@ -29,6 +47,13 @@ export interface Finding {
   remediation: string;
   created_at: string;
   updated_at: string;
+
+  /** The first endpoint this was observed on, when one is known. */
+  endpoint: FindingEndpointRef | null;
+  /** How many endpoints the rule failed on. */
+  occurrence_count: number;
+  /** Every affected endpoint. */
+  occurrences: FindingOccurrence[];
 }
 
 export interface FindingSummary {

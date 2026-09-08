@@ -24,6 +24,7 @@ from app.scanner.security.types import (
     FindingCategory,
     FindingConfidence,
     FindingData,
+    FindingRule,
     FindingSeverity,
 )
 from app.services import finding_service
@@ -71,7 +72,7 @@ def create_scan_row(user_id: uuid.UUID, findings: list[FindingData]) -> uuid.UUI
         db.commit()
         db.refresh(scan)
 
-        finding_service.replace_findings(db, scan, findings)
+        finding_service.replace_findings_from_data(db, scan, findings)
         db.commit()
         return scan.id
 
@@ -82,7 +83,7 @@ def user_id_for(client: TestClient) -> uuid.UUID:
 
 SAMPLE_FINDINGS = [
     FindingData(
-        code="missing_csp",
+        rule=FindingRule.SECURITY_HEADER_CSP_MISSING,
         title="Content-Security-Policy header not set",
         category=FindingCategory.SECURITY_HEADER,
         severity=FindingSeverity.MEDIUM,
@@ -93,7 +94,7 @@ SAMPLE_FINDINGS = [
         remediation="r",
     ),
     FindingData(
-        code="missing_permissions_policy",
+        rule=FindingRule.SECURITY_HEADER_PERMISSIONS_POLICY_MISSING,
         title="Permissions-Policy header not set",
         category=FindingCategory.SECURITY_HEADER,
         severity=FindingSeverity.INFO,
@@ -104,7 +105,7 @@ SAMPLE_FINDINGS = [
         remediation="r",
     ),
     FindingData(
-        code="session_cookie_missing_httponly",
+        rule=FindingRule.COOKIE_HTTPONLY_MISSING,
         title="Session cookie is missing HttpOnly",
         category=FindingCategory.COOKIE,
         severity=FindingSeverity.MEDIUM,
@@ -148,7 +149,7 @@ def test_owner_can_read_findings_with_full_detail(client):
     body = response.json()
     first = body["items"][0]
     for field in (
-        "id", "scan_id", "code", "title", "category", "severity",
+        "id", "scan_id", "rule_id", "title", "category", "severity",
         "confidence", "description", "evidence", "impact", "remediation",
     ):
         assert field in first, field
@@ -242,7 +243,7 @@ def test_replacing_findings_does_not_accumulate_duplicates(client):
 
     with SessionLocal() as db:
         scan = db.get(Scan, scan_id)
-        finding_service.replace_findings(db, scan, SAMPLE_FINDINGS[:1])
+        finding_service.replace_findings_from_data(db, scan, SAMPLE_FINDINGS[:1])
         db.commit()
 
     body = owner.get(f"/api/scans/{scan_id}/findings").json()

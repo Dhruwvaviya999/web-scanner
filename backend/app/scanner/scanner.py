@@ -12,10 +12,10 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from app.scanner.analysis.module import EndpointAnalysisModule
 from app.scanner.crawler.module import CrawlModule
 from app.scanner.crawler.types import CrawlConfig
 from app.scanner.http_scanner import HttpProbeModule
-from app.scanner.security.module import SecurityAnalysisModule
 from app.scanner.types import (
     ScanErrorCode,
     ScannerConfig,
@@ -43,9 +43,12 @@ class WebScanner:
             modules
             if modules is not None
             else [
+                # Probe the seed, crawl from where it landed, then assess every
+                # endpoint the crawl captured. Analysis runs last because it
+                # consumes what the earlier stages produced.
                 HttpProbeModule(self._config),
-                SecurityAnalysisModule(),
                 CrawlModule(self._config, self._crawl_config),
+                EndpointAnalysisModule(),
             ]
         )
 

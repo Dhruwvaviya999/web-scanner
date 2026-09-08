@@ -15,14 +15,16 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, String, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+from app.scanner.analysis.types import AnalysisSkipReason, EndpointAnalysisStatus
 from app.scanner.crawler.types import FormFieldKind, ParameterLocation
 
 if TYPE_CHECKING:
+    from app.models.finding import Finding, FindingOccurrence
     from app.models.scan import Scan
 
 
@@ -55,7 +57,39 @@ class Endpoint(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
+    # --- Analysis state (phase 5) ---
+    analysis_status: Mapped[EndpointAnalysisStatus] = mapped_column(
+        Enum(
+            EndpointAnalysisStatus,
+            name="endpoint_analysis_status",
+            native_enum=True,
+            validate_strings=True,
+        ),
+        nullable=False,
+        default=EndpointAnalysisStatus.NOT_ANALYZED,
+        server_default=EndpointAnalysisStatus.NOT_ANALYZED.value,
+        index=True,
+    )
+    #: Why the endpoint was not analysed. Set only for SKIPPED and FAILED.
+    skip_reason: Mapped[AnalysisSkipReason | None] = mapped_column(
+        Enum(
+            AnalysisSkipReason,
+            name="analysis_skip_reason",
+            native_enum=True,
+            validate_strings=True,
+        ),
+        nullable=True,
+    )
+    #: Readable detail for a FAILED endpoint. Never response content.
+    analysis_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     scan: Mapped["Scan"] = relationship(back_populates="endpoints")
+    findings: Mapped[list["Finding"]] = relationship(back_populates="endpoint")
+    finding_occurrences: Mapped[list["FindingOccurrence"]] = relationship(
+        back_populates="endpoint",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
     parameters: Mapped[list["EndpointParameter"]] = relationship(
         back_populates="endpoint",
         cascade="all, delete-orphan",

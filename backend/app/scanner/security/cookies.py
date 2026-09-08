@@ -22,6 +22,7 @@ from app.scanner.security.types import (
     FindingCategory,
     FindingConfidence,
     FindingData,
+    FindingRule,
     FindingSeverity,
 )
 
@@ -184,7 +185,7 @@ def _analyze_cookie(cookie: CookieInfo, *, is_https: bool) -> list[FindingData]:
     if is_https and not cookie.secure:
         findings.append(
             FindingData(
-                code="cookie_missing_secure",
+                rule=FindingRule.COOKIE_SECURE_MISSING,
                 title=(
                     "Session cookie is not marked Secure"
                     if session_like
@@ -211,6 +212,7 @@ def _analyze_cookie(cookie: CookieInfo, *, is_https: bool) -> list[FindingData]:
                     "clear text, where a party on the network path could read it."
                 ),
                 remediation=f'Add the Secure attribute when setting "{cookie.name}".',
+                subject=cookie.name,
             )
         )
 
@@ -221,7 +223,7 @@ def _analyze_cookie(cookie: CookieInfo, *, is_https: bool) -> list[FindingData]:
     if session_like and not cookie.http_only:
         findings.append(
             FindingData(
-                code="session_cookie_missing_httponly",
+                rule=FindingRule.COOKIE_HTTPONLY_MISSING,
                 title="Session cookie is missing HttpOnly",
                 category=FindingCategory.COOKIE,
                 severity=FindingSeverity.MEDIUM,
@@ -242,6 +244,7 @@ def _analyze_cookie(cookie: CookieInfo, *, is_https: bool) -> list[FindingData]:
                     f'Add the HttpOnly attribute when setting "{cookie.name}", unless it is '
                     "genuinely required by client-side code."
                 ),
+                subject=cookie.name,
             )
         )
 
@@ -249,7 +252,7 @@ def _analyze_cookie(cookie: CookieInfo, *, is_https: bool) -> list[FindingData]:
     if cookie.same_site is None:
         findings.append(
             FindingData(
-                code="cookie_missing_samesite",
+                rule=FindingRule.COOKIE_SAMESITE_MISSING,
                 title=(
                     "Session cookie has no SameSite attribute"
                     if session_like
@@ -274,6 +277,7 @@ def _analyze_cookie(cookie: CookieInfo, *, is_https: bool) -> list[FindingData]:
                     "default, Strict for cookies that never need to survive a cross-site "
                     "navigation."
                 ),
+                subject=cookie.name,
             )
         )
     elif cookie.same_site.lower() == "none" and not cookie.secure:
@@ -281,7 +285,7 @@ def _analyze_cookie(cookie: CookieInfo, *, is_https: bool) -> list[FindingData]:
         # cookie silently fails to be set. That is a concrete defect, not advice.
         findings.append(
             FindingData(
-                code="cookie_samesite_none_without_secure",
+                rule=FindingRule.COOKIE_SAMESITE_NONE_WITHOUT_SECURE,
                 title="Cookie uses SameSite=None without Secure",
                 category=FindingCategory.COOKIE,
                 severity=FindingSeverity.MEDIUM,
@@ -300,6 +304,7 @@ def _analyze_cookie(cookie: CookieInfo, *, is_https: bool) -> list[FindingData]:
                     "Add the Secure attribute alongside SameSite=None, or use SameSite=Lax "
                     "if the cookie does not need to be sent cross-site."
                 ),
+                subject=cookie.name,
             )
         )
 

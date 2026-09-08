@@ -132,6 +132,9 @@ def test_owner_reads_endpoints_with_parameters_and_summary(client):
         "endpoints": 3, "forms": 1, "parameters": 2,
         "pages_crawled": 3, "pages_skipped": 2,
         "max_depth_reached": 2, "crawl_limit_reached": False,
+        # Coverage is null here: these rows were inserted directly, so the
+        # analysis stage never ran for them.
+        "endpoints_analyzed": None, "endpoints_skipped": None, "endpoints_failed": None,
     }
 
 

@@ -124,7 +124,12 @@ def read_scan_endpoints(
     scan = scan_service.get_scan(db, current_user, scan_id)
     return EndpointListResponse(
         items=[EndpointRead.model_validate(e) for e in endpoints],
-        summary=AttackSurfaceSummary(**attack_surface_service.summarize(db, scan)),
+        summary=AttackSurfaceSummary(
+            **attack_surface_service.summarize(db, scan),
+            endpoints_analyzed=scan.endpoints_analyzed,
+            endpoints_skipped=scan.endpoints_skipped,
+            endpoints_failed=scan.endpoints_failed,
+        ),
     )
 
 

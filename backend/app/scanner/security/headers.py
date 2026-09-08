@@ -23,6 +23,7 @@ from app.scanner.security.types import (
     FindingCategory,
     FindingConfidence,
     FindingData,
+    FindingRule,
     FindingSeverity,
 )
 
@@ -107,7 +108,7 @@ def _check_hsts(headers: Mapping[str, str], *, is_https: bool) -> list[FindingDa
     if value is None:
         return [
             FindingData(
-                code="missing_hsts",
+                rule=FindingRule.SECURITY_HEADER_HSTS_MISSING,
                 title="Strict-Transport-Security header not set",
                 category=FindingCategory.SECURITY_HEADER,
                 severity=FindingSeverity.MEDIUM,
@@ -139,7 +140,7 @@ def _check_hsts(headers: Mapping[str, str], *, is_https: bool) -> list[FindingDa
     if max_age == 0:
         return [
             FindingData(
-                code="hsts_disabled",
+                rule=FindingRule.SECURITY_HEADER_HSTS_DISABLED,
                 title="Strict-Transport-Security is disabled by max-age=0",
                 category=FindingCategory.SECURITY_HEADER,
                 severity=FindingSeverity.LOW,
@@ -163,7 +164,7 @@ def _check_hsts(headers: Mapping[str, str], *, is_https: bool) -> list[FindingDa
     if max_age is not None and max_age < MIN_HSTS_MAX_AGE_SECONDS:
         return [
             FindingData(
-                code="hsts_short_max_age",
+                rule=FindingRule.SECURITY_HEADER_HSTS_SHORT_MAX_AGE,
                 title="Strict-Transport-Security max-age is short",
                 category=FindingCategory.SECURITY_HEADER,
                 severity=FindingSeverity.INFO,
@@ -199,7 +200,7 @@ def _check_csp(csp: str | None) -> list[FindingData]:
     if csp is None:
         return [
             FindingData(
-                code="missing_csp",
+                rule=FindingRule.SECURITY_HEADER_CSP_MISSING,
                 title="Content-Security-Policy header not set",
                 category=FindingCategory.SECURITY_HEADER,
                 severity=FindingSeverity.MEDIUM,
@@ -234,7 +235,7 @@ def _check_csp(csp: str | None) -> list[FindingData]:
     if markers:
         return [
             FindingData(
-                code="permissive_csp",
+                rule=FindingRule.SECURITY_HEADER_CSP_PERMISSIVE,
                 title="Content-Security-Policy contains permissive directives",
                 category=FindingCategory.SECURITY_HEADER,
                 severity=FindingSeverity.INFO,
@@ -284,7 +285,7 @@ def _check_content_type_options(headers: Mapping[str, str]) -> list[FindingData]
 
     return [
         FindingData(
-            code="missing_content_type_options",
+            rule=FindingRule.SECURITY_HEADER_X_CONTENT_TYPE_OPTIONS_MISSING,
             title="X-Content-Type-Options is not set to nosniff",
             category=FindingCategory.SECURITY_HEADER,
             severity=FindingSeverity.LOW,
@@ -331,7 +332,7 @@ def _check_frame_options(headers: Mapping[str, str], *, csp: str | None) -> list
 
     return [
         FindingData(
-            code="missing_frame_options",
+            rule=FindingRule.SECURITY_HEADER_X_FRAME_OPTIONS_MISSING,
             title="Framing is not restricted",
             category=FindingCategory.SECURITY_HEADER,
             severity=FindingSeverity.LOW,
@@ -359,7 +360,7 @@ def _check_referrer_policy(headers: Mapping[str, str]) -> list[FindingData]:
 
     return [
         FindingData(
-            code="missing_referrer_policy",
+            rule=FindingRule.SECURITY_HEADER_REFERRER_POLICY_MISSING,
             title="Referrer-Policy header not set",
             category=FindingCategory.SECURITY_HEADER,
             severity=FindingSeverity.LOW,
@@ -389,7 +390,7 @@ def _check_permissions_policy(headers: Mapping[str, str]) -> list[FindingData]:
 
     return [
         FindingData(
-            code="missing_permissions_policy",
+            rule=FindingRule.SECURITY_HEADER_PERMISSIONS_POLICY_MISSING,
             title="Permissions-Policy header not set",
             category=FindingCategory.SECURITY_HEADER,
             severity=FindingSeverity.INFO,

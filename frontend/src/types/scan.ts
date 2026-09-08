@@ -30,6 +30,21 @@ export interface Scan {
   max_depth_reached: number | null;
   crawl_limit_reached: boolean | null;
 
+  /** Scan summary. Null when the corresponding stage did not run. */
+  endpoints_discovered: number | null;
+  endpoints_analyzed: number | null;
+  endpoints_skipped: number | null;
+  endpoints_failed: number | null;
+  forms_discovered: number | null;
+  parameters_discovered: number | null;
+
+  total_findings: number | null;
+  critical_count: number | null;
+  high_count: number | null;
+  medium_count: number | null;
+  low_count: number | null;
+  info_count: number | null;
+
   /** Set only when `status === "FAILED"`. */
   error_message: string | null;
 }

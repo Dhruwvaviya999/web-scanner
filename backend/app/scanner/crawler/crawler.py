@@ -90,7 +90,11 @@ class Crawler:
 
             result.pages_crawled += 1
             result.max_depth_reached = max(result.max_depth_reached, depth)
-            result.endpoints.append(self._endpoint_for(page, depth))
+            endpoint = self._endpoint_for(page, depth)
+            result.endpoints.append(endpoint)
+            # Keyed by the canonical URL so the analysis stage can look the
+            # response up from the stored endpoint without another request.
+            result.responses[endpoint.url] = page.captured()
 
             # Only documents carry links and forms; a JSON or image response is
             # recorded as an endpoint and otherwise left alone.

@@ -11,6 +11,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.scanner.analysis.types import AnalysisSkipReason, EndpointAnalysisStatus
 from app.scanner.crawler.types import FormFieldKind, ParameterLocation
 
 
@@ -37,6 +38,9 @@ class EndpointRead(BaseModel):
     depth: int
     page_title: str | None
     discovered_at: datetime
+    analysis_status: EndpointAnalysisStatus
+    skip_reason: AnalysisSkipReason | None = None
+    analysis_error: str | None = None
     parameters: list[EndpointParameterRead] = []
 
 
@@ -75,6 +79,14 @@ class AttackSurfaceSummary(BaseModel):
     crawl_limit_reached: bool | None = Field(
         default=None,
         description="True when max_pages or the time budget ended the crawl. Normal termination.",
+    )
+
+    # --- Coverage (phase 5) ---
+    endpoints_analyzed: int | None = None
+    endpoints_skipped: int | None = None
+    endpoints_failed: int | None = Field(
+        default=None,
+        description="Endpoints that could not be assessed. These never produce findings.",
     )
 
 

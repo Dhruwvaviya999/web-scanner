@@ -2,10 +2,11 @@
 
 A web application for running and tracking HTTP reconnaissance scans against sites you own.
 
-**This is the Phase 4 release: security-configuration analysis plus attack-surface
-discovery.** It provides authentication, scan management, a bounded HTTP probe, analysis of the
-response's security headers and cookies recorded as structured findings, and a bounded
-same-origin crawler that maps the target's reachable URLs, query parameters and forms.
+**This is the Phase 5 release: security-configuration analysis across a discovered attack
+surface.** It provides authentication, scan management, a bounded HTTP probe, a bounded
+same-origin crawler, and security-header and cookie analysis of **every endpoint the crawl
+reached** — with findings deduplicated by rule identity, linked to the endpoints they affect, and
+reported alongside explicit coverage numbers.
 
 **It performs no vulnerability testing.** No payloads are sent and no form is ever submitted.
 There is no TLS inspection, no XSS, SQL-injection, CSRF, SSRF or IDOR testing, no CORS analysis
@@ -74,7 +75,8 @@ web-scanner/
 │   │       ├── 0001_initial_schema.py
 │   │       ├── 0002_scan_response_analysis.py
 │   │       ├── 0003_findings.py
-│   │       └── 0004_attack_surface.py
+│   │       ├── 0004_attack_surface.py
+│   │       └── 0005_scan_intelligence.py
 │   └── app/
 │       ├── main.py                    # app wiring, CORS, exception handlers
 │       ├── core/
@@ -99,6 +101,11 @@ web-scanner/
 │           │   ├── headers.py         # security-header rules
 │           │   ├── cookies.py         # Set-Cookie parsing + cookie rules
 │           │   └── module.py          # glue: response -> findings
+│           ├── analysis/              # phase 5 pipeline stage
+│           │   ├── types.py           # coverage + aggregated findings
+│           │   ├── endpoint_analyzer.py  # eligibility + per-endpoint run (pure)
+│           │   ├── aggregator.py      # deduplication by rule identity (pure)
+│           │   └── module.py          # glue: captured responses -> findings
 │           └── crawler/               # attack-surface discovery
 │               ├── types.py           # CrawlConfig + discovered resources
 │               ├── url_normalizer.py  # normalisation + same-origin rules (pure)
@@ -242,7 +249,7 @@ Always change the schema through a migration; never edit the database by hand.
 
 ```bash
 cd backend
-.venv\Scripts\python -m pytest          # 135 tests
+.venv\Scripts\python -m pytest          # 168 tests
 ```
 
 | Suite | Covers |
@@ -252,6 +259,9 @@ cd backend
 | `test_url_normalizer.py` | Normalisation, same-origin scoping, canonical URLs |
 | `test_html_parser.py` | Link and form extraction |
 | `test_crawler.py` | Crawl limits, cycles, redirects, non-HTML, failures |
+| `test_finding_identity.py` | Rule identity and deduplication |
+| `test_endpoint_analysis.py` | Eligibility, coverage, failure isolation |
+| `test_finding_association.py` | Finding-to-endpoint linking and cascade behaviour |
 | `test_findings_api.py` | Findings API ownership and isolation |
 | `test_attack_surface_api.py` | Endpoint/form API ownership and isolation |
 
@@ -598,6 +608,132 @@ to one field, because that is one input as far as attack surface goes.
 
 ---
 
+## Scan pipeline (Phase 5)
+
+```
+POST /api/scans
+      |
+Scan Service            PENDING -> RUNNING
+      |
+Scanner
+      |-- HttpProbeModule        fetch the seed, analyse the response
+      |-- CrawlModule            crawl the origin, capture every response
+      +-- EndpointAnalysisModule assess each captured response
+                |
+                |-- eligibility          which responses are worth analysing
+                |-- headers.py           \  reused unchanged from Phase 3,
+                |-- cookies.py           /  still pure, still network-free
+                +-- aggregator           group by rule identity
+                          |
+      attack_surface_service -> endpoints, parameters, forms, analysis state
+      finding_service        -> findings + occurrences
+      scan summary           -> coverage and severity counters
+                          |
+Scan Service            COMPLETED
+```
+
+### No endpoint is fetched twice
+
+The crawler already retrieves every page, so it keeps the analysis-relevant slice of each
+response (`CapturedResponse`: status, headers, `Set-Cookie`, content type) and the analysis stage
+consumes that. **The analysis stage issues no HTTP requests at all.** That halves the traffic
+against the target compared with re-fetching, and leaves exactly one code path for redirects,
+SSRF revalidation and timeouts rather than two that could drift apart.
+
+The response body is deliberately *not* retained: no current detector reads page content, and not
+keeping it means page content cannot leak into a finding.
+
+When the crawler does not run — disabled, or the probe never connected — the seed response is
+analysed on its own, so a scan always assesses whatever it managed to reach.
+
+### Finding identity
+
+Every rule has a stable identifier, and that identifier — never the display title — is what the
+system keys on:
+
+```
+SECURITY_HEADER_CSP_MISSING          COOKIE_SECURE_MISSING
+SECURITY_HEADER_HSTS_MISSING         COOKIE_HTTPONLY_MISSING
+SECURITY_HEADER_X_FRAME_OPTIONS_MISSING   COOKIE_SAMESITE_MISSING
+...                                  COOKIE_SAMESITE_NONE_WITHOUT_SECURE
+```
+
+Stored as a validated string rather than a native database enum: a scanner gains rules
+constantly, and `ALTER TYPE ... ADD VALUE` on each one is friction for no benefit. The
+`FindingRule` enum enforces the allowed values in code and at the schema boundary.
+
+A finding's full identity is **`(rule_id, subject)`**. The subject is what the finding is *about*
+within its rule — a cookie name, for instance. That second half matters:
+
+| Two findings | Merge? | Why |
+| ------------ | ------ | --- |
+| `COOKIE_HTTPONLY_MISSING` and `COOKIE_SECURE_MISSING` | no | Different rules, despite similar titles |
+| `COOKIE_SECURE_MISSING` on cookie `session` and on cookie `theme` | no | Different subjects — merging would erase which cookie was at fault |
+| `SECURITY_HEADER_CSP_MISSING` on `/` and on `/login` | **yes** | Same rule, same subject, different place |
+
+### Deduplication preserves affected endpoints
+
+Grouping is a parent finding plus occurrence rows, so collapsing never loses information:
+
+```
+Finding: Content-Security-Policy header not set     (MEDIUM, HIGH confidence)
+  rule_id: SECURITY_HEADER_CSP_MISSING
+  endpoint: GET /            <- primary, the first place it was seen
+  occurrence_count: 12
+  occurrences:
+    /            "No Content-Security-Policy header was present in the response."
+    /login       "No Content-Security-Policy header was present in the response."
+    /products    ...
+```
+
+Each occurrence keeps its own evidence, and `finding_occurrences.endpoint_url` holds the URL as
+text alongside the foreign key — so an occurrence stays readable even if the endpoint row is
+later removed. The finding's own `endpoint_id` is `ON DELETE SET NULL`, never CASCADE: losing an
+endpoint row must not silently delete the security finding reported against it.
+
+### Coverage
+
+A scan distinguishes discovered from analysed, and says why anything was left out.
+
+| Endpoint status | Meaning |
+| --------------- | ------- |
+| `ANALYZED` | Detectors ran against this response |
+| `SKIPPED` | Deliberately not assessed — see `skip_reason` |
+| `FAILED` | Should have been assessed but could not be. **Produces no findings** |
+| `NOT_ANALYZED` | The analysis stage never reached it |
+
+Skip reasons: `EXCLUDED_RESOURCE` (stylesheets, scripts, images, fonts, media — the current
+detectors have nothing to say about them), plus `NON_HTML`, `EXTERNAL`, `DUPLICATE`,
+`CRAWL_LIMIT`, `REQUEST_FAILED` and `UNSUPPORTED_SCHEME` for other cases.
+
+JSON and other non-document responses *are* analysed — Phase 3's own guard still applies inside
+the detectors, so document-scoped rules (CSP, framing, referrer, permissions) stay quiet while
+HSTS and `X-Content-Type-Options` still apply.
+
+### Failure philosophy
+
+One bad page must not invalidate a scan. Twenty endpoints discovered, one timing out, nineteen
+analysed produces a `COMPLETED` scan reporting `19 analysed, 1 could not be analysed`.
+
+A failed endpoint yields **no findings at all**. Reporting a missing header for a page that was
+never successfully read would be a fabricated result, so the pipeline refuses to do it.
+
+### Scan summary
+
+Written once at the end of the scan, deterministically, from what this run produced:
+
+```
+endpoints_discovered  endpoints_analyzed  endpoints_skipped  endpoints_failed
+forms_discovered      parameters_discovered
+total_findings  critical_count  high_count  medium_count  low_count  info_count
+```
+
+Counters stay NULL when the corresponding stage did not run, so "not attempted" remains
+distinguishable from "attempted and found nothing". There is deliberately **no 0-100 risk
+score** — a single number would imply a confidence this scanner has not earned.
+
+---
+
 ## API overview
 
 All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
@@ -636,7 +772,7 @@ All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
 | GET    | `/api/scans` | yes | List the caller's scans (`limit`, `offset`, `status`) |
 | GET    | `/api/scans/stats` | yes | Scan counts by status |
 | GET    | `/api/scans/{scan_id}` | yes | Read one scan |
-| GET    | `/api/scans/{scan_id}/findings` | yes | Security findings for one scan, most severe first |
+| GET    | `/api/scans/{scan_id}/findings` | yes | Deduplicated findings with endpoint context and occurrences |
 | GET    | `/api/scans/{scan_id}/endpoints` | yes | URLs the crawler reached, with parameter names |
 | GET    | `/api/scans/{scan_id}/forms` | yes | Forms found on crawled pages, with their fields |
 | DELETE | `/api/scans/{scan_id}` | yes | Delete one scan |
@@ -711,8 +847,14 @@ the server and mirrored by Zod in the browser; the server is authoritative.
   carry MEDIUM confidence.
 * **Only cookies set on the scanned response are seen.** Cookies set after login, or by
   JavaScript, are invisible to this scanner.
-* **Header analysis reflects one URL.** Another path on the same site may send different
-  headers. The crawler maps the surface but does not yet re-run the detectors per page.
+* **Still no active vulnerability testing.** The scanner performs security-*configuration*
+  analysis. It does not detect XSS, SQL injection, CSRF, SSRF, IDOR or any other injectable
+  class, and sends no payloads. A clean result means these configuration checks found nothing —
+  not that the application is free of vulnerabilities.
+* **Analysis covers only what the crawler reached.** Pages behind a login, behind a form, or
+  built by JavaScript are never seen, so they are neither analysed nor counted as skipped.
+* **Cookies are only observed where they are set.** A cookie issued after authentication is
+  invisible to this scanner.
 * **No JavaScript.** The crawler parses server-returned HTML only. A single-page application
   that builds its routes at runtime will appear to have almost no attack surface, because no
   browser engine is used and none is planned for this phase.
@@ -750,10 +892,11 @@ Planned, in order. Everything from Phase 3 onward is unimplemented.
 | 1 | Auth, dashboard, scan management, basic HTTP probe | done |
 | 2 | Response analysis: page title, content type, size, redirect chain | done |
 | 3 | `Finding` model, security-header and cookie analysis | done |
-| 4 | Crawler, endpoint / parameter / form discovery | **done - current release** |
-| 5 | TLS inspection, CORS policy, per-endpoint header analysis, risk scoring | planned |
-| 6 | Active testing: XSS, SQL injection, open redirect, API security checks | planned |
-| 7 | Reporting and export, background execution for long-running scans | planned |
+| 4 | Crawler, endpoint / parameter / form discovery | done |
+| 5 | Per-endpoint analysis, finding identity, deduplication, coverage | **done - current release** |
+| 6 | TLS inspection, CORS policy, risk scoring | planned |
+| 7 | Active testing: XSS, SQL injection, open redirect, API security checks | planned |
+| 8 | Reporting and export, background execution for long-running scans | planned |
 
 The attack surface discovered in Phase 4 is what later detectors will consume: endpoints and
 their parameters are the injection points an XSS or SQL-injection check needs, and forms are

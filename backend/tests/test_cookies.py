@@ -20,12 +20,12 @@ from app.scanner.security.types import FindingCategory, FindingSeverity
 
 
 def codes(cookies, *, is_https=True) -> set[str]:
-    return {f.code for f in analyze_cookies(cookies, is_https=is_https)}
+    return {f.rule.value for f in analyze_cookies(cookies, is_https=is_https)}
 
 
 def find(cookies, code, *, is_https=True):
     for finding in analyze_cookies(cookies, is_https=is_https):
-        if finding.code == code:
+        if finding.rule.value == code:
             return finding
     return None
 
@@ -46,7 +46,7 @@ def test_secure_session_cookie_produces_no_findings():
 
 def test_missing_secure_on_https_is_reported():
     cookie = parse_set_cookie("session=abc; HttpOnly; SameSite=Lax")
-    finding = find([cookie], "cookie_missing_secure")
+    finding = find([cookie], "COOKIE_SECURE_MISSING")
 
     assert finding is not None
     assert finding.severity is FindingSeverity.MEDIUM  # session-like
@@ -56,12 +56,12 @@ def test_missing_secure_on_https_is_reported():
 def test_missing_secure_not_reported_on_http():
     """Over plain HTTP the Secure attribute would be ignored anyway."""
     cookie = parse_set_cookie("session=abc; HttpOnly; SameSite=Lax")
-    assert "cookie_missing_secure" not in codes([cookie], is_https=False)
+    assert "COOKIE_SECURE_MISSING" not in codes([cookie], is_https=False)
 
 
 def test_non_session_cookie_missing_secure_is_only_low():
     cookie = parse_set_cookie("theme=dark; SameSite=Lax")
-    finding = find([cookie], "cookie_missing_secure")
+    finding = find([cookie], "COOKIE_SECURE_MISSING")
 
     assert finding is not None
     assert finding.severity is FindingSeverity.LOW
@@ -72,7 +72,7 @@ def test_non_session_cookie_missing_secure_is_only_low():
 
 def test_session_cookie_missing_httponly_is_medium_with_medium_confidence():
     cookie = parse_set_cookie("session_id=abc; Secure; SameSite=Lax")
-    finding = find([cookie], "session_cookie_missing_httponly")
+    finding = find([cookie], "COOKIE_HTTPONLY_MISSING")
 
     assert finding is not None
     assert finding.severity is FindingSeverity.MEDIUM
@@ -87,7 +87,7 @@ def test_session_cookie_missing_httponly_is_medium_with_medium_confidence():
 def test_non_session_cookie_without_httponly_is_not_reported():
     """Many cookies are read by scripts by design; flagging them all is noise."""
     cookie = parse_set_cookie("theme=dark; Secure; SameSite=Lax")
-    assert "session_cookie_missing_httponly" not in codes([cookie])
+    assert "COOKIE_HTTPONLY_MISSING" not in codes([cookie])
 
 
 def test_sidebar_like_name_is_not_mistaken_for_a_session_cookie():
@@ -118,20 +118,20 @@ def test_common_framework_session_names_are_recognised():
 
 def test_samesite_present_produces_no_samesite_finding():
     cookie = parse_set_cookie("session=abc; Secure; HttpOnly; SameSite=Strict")
-    assert "cookie_missing_samesite" not in codes([cookie])
+    assert "COOKIE_SAMESITE_MISSING" not in codes([cookie])
 
 
 def test_samesite_missing_is_low_for_session_and_info_otherwise():
     session = parse_set_cookie("session=abc; Secure; HttpOnly")
     other = parse_set_cookie("theme=dark; Secure")
 
-    assert find([session], "cookie_missing_samesite").severity is FindingSeverity.LOW
-    assert find([other], "cookie_missing_samesite").severity is FindingSeverity.INFO
+    assert find([session], "COOKIE_SAMESITE_MISSING").severity is FindingSeverity.LOW
+    assert find([other], "COOKIE_SAMESITE_MISSING").severity is FindingSeverity.INFO
 
 
 def test_samesite_none_without_secure_is_reported():
     cookie = parse_set_cookie("tracker=1; SameSite=None")
-    finding = find([cookie], "cookie_samesite_none_without_secure", is_https=False)
+    finding = find([cookie], "COOKIE_SAMESITE_NONE_WITHOUT_SECURE", is_https=False)
 
     assert finding is not None
     assert finding.severity is FindingSeverity.MEDIUM
@@ -152,10 +152,10 @@ def test_multiple_cookies_are_each_analysed():
 
     findings = analyze_cookies(cookies, is_https=True)
     # Only the insecure "session" cookie should generate the serious findings.
-    assert {f.code for f in findings} == {
-        "cookie_missing_secure",
-        "session_cookie_missing_httponly",
-        "cookie_missing_samesite",
+    assert {f.rule.value for f in findings} == {
+        "COOKIE_SECURE_MISSING",
+        "COOKIE_HTTPONLY_MISSING",
+        "COOKIE_SAMESITE_MISSING",
     }
     assert all('"session"' in f.evidence for f in findings)
 
@@ -238,7 +238,7 @@ def test_every_cookie_finding_carries_complete_guidance():
 
     assert findings
     for finding in findings:
-        assert finding.code and finding.title
+        assert finding.rule and finding.title
         assert finding.description and finding.evidence
         assert finding.impact and finding.remediation
         assert finding.category is FindingCategory.COOKIE

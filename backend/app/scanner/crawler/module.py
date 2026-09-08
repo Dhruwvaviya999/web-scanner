@@ -99,6 +99,9 @@ def _network_fetcher(fetcher: HttpFetcher, origin: Origin):
             content_type=content_type,
             body=raw.body,
             is_html=is_html_response(content_type),
+            is_https=raw.is_https,
+            headers=dict(raw.headers),
+            set_cookie=raw.set_cookie,
         )
 
     return fetch

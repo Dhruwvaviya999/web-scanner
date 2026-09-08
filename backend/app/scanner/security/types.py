@@ -57,6 +57,57 @@ class FindingCategory(str, enum.Enum):
     OTHER = "OTHER"
 
 
+class FindingRule(str, enum.Enum):
+    """Stable programmatic identity for a detector rule.
+
+    This is what deduplication and cross-scan correlation key on, so it must
+    never change once shipped. Display titles are free to be reworded.
+
+    Stored as a plain string column rather than a native database enum: a
+    security scanner gains rules constantly, and `ALTER TYPE ... ADD VALUE` on
+    every one of them is friction for no benefit. Validity is enforced here and
+    at the schema boundary instead.
+    """
+
+    # --- Security headers ---
+    SECURITY_HEADER_HSTS_MISSING = "SECURITY_HEADER_HSTS_MISSING"
+    SECURITY_HEADER_HSTS_DISABLED = "SECURITY_HEADER_HSTS_DISABLED"
+    SECURITY_HEADER_HSTS_SHORT_MAX_AGE = "SECURITY_HEADER_HSTS_SHORT_MAX_AGE"
+    SECURITY_HEADER_CSP_MISSING = "SECURITY_HEADER_CSP_MISSING"
+    SECURITY_HEADER_CSP_PERMISSIVE = "SECURITY_HEADER_CSP_PERMISSIVE"
+    SECURITY_HEADER_X_CONTENT_TYPE_OPTIONS_MISSING = (
+        "SECURITY_HEADER_X_CONTENT_TYPE_OPTIONS_MISSING"
+    )
+    SECURITY_HEADER_X_FRAME_OPTIONS_MISSING = "SECURITY_HEADER_X_FRAME_OPTIONS_MISSING"
+    SECURITY_HEADER_REFERRER_POLICY_MISSING = "SECURITY_HEADER_REFERRER_POLICY_MISSING"
+    SECURITY_HEADER_PERMISSIONS_POLICY_MISSING = "SECURITY_HEADER_PERMISSIONS_POLICY_MISSING"
+
+    # --- Cookies ---
+    COOKIE_SECURE_MISSING = "COOKIE_SECURE_MISSING"
+    COOKIE_HTTPONLY_MISSING = "COOKIE_HTTPONLY_MISSING"
+    COOKIE_SAMESITE_MISSING = "COOKIE_SAMESITE_MISSING"
+    COOKIE_SAMESITE_NONE_WITHOUT_SECURE = "COOKIE_SAMESITE_NONE_WITHOUT_SECURE"
+
+
+#: Phase 3 stored short lowercase codes. Kept so the 0005 migration can rewrite
+#: existing rows, and so old exports remain interpretable.
+LEGACY_CODE_TO_RULE: dict[str, FindingRule] = {
+    "missing_hsts": FindingRule.SECURITY_HEADER_HSTS_MISSING,
+    "hsts_disabled": FindingRule.SECURITY_HEADER_HSTS_DISABLED,
+    "hsts_short_max_age": FindingRule.SECURITY_HEADER_HSTS_SHORT_MAX_AGE,
+    "missing_csp": FindingRule.SECURITY_HEADER_CSP_MISSING,
+    "permissive_csp": FindingRule.SECURITY_HEADER_CSP_PERMISSIVE,
+    "missing_content_type_options": FindingRule.SECURITY_HEADER_X_CONTENT_TYPE_OPTIONS_MISSING,
+    "missing_frame_options": FindingRule.SECURITY_HEADER_X_FRAME_OPTIONS_MISSING,
+    "missing_referrer_policy": FindingRule.SECURITY_HEADER_REFERRER_POLICY_MISSING,
+    "missing_permissions_policy": FindingRule.SECURITY_HEADER_PERMISSIONS_POLICY_MISSING,
+    "cookie_missing_secure": FindingRule.COOKIE_SECURE_MISSING,
+    "session_cookie_missing_httponly": FindingRule.COOKIE_HTTPONLY_MISSING,
+    "cookie_missing_samesite": FindingRule.COOKIE_SAMESITE_MISSING,
+    "cookie_samesite_none_without_secure": FindingRule.COOKIE_SAMESITE_NONE_WITHOUT_SECURE,
+}
+
+
 @dataclass(frozen=True, slots=True)
 class FindingData:
     """A finding as produced by a detector, before it reaches the database.
@@ -66,9 +117,8 @@ class FindingData:
     the HTTP response.
     """
 
-    #: Stable identifier for the rule that fired, e.g. "missing_csp".
-    #: Lets findings be correlated across scans without matching on prose.
-    code: str
+    #: Which rule fired. The deduplication identity, never a display string.
+    rule: FindingRule
     title: str
     category: FindingCategory
     severity: FindingSeverity
@@ -79,6 +129,16 @@ class FindingData:
     evidence: str
     impact: str
     remediation: str
+    #: What the finding is *about* within its rule — a cookie name, for example.
+    #: Two findings of the same rule but different subjects stay separate, so
+    #: "cookie `session` missing Secure" never merges with "cookie `theme`
+    #: missing Secure". None for rules that apply to the response as a whole.
+    subject: str | None = None
+
+    @property
+    def identity(self) -> tuple[str, str | None]:
+        """The deduplication key: which rule, about what."""
+        return (self.rule.value, self.subject)
 
 
 #: Sort key for presenting findings most-severe-first.

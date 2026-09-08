@@ -90,6 +90,23 @@ class Scan(Base, TimestampMixin):
     max_depth_reached: Mapped[int | None] = mapped_column(Integer, nullable=True)
     crawl_limit_reached: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
+    # --- Scan summary (phase 5) ---
+    # Denormalised counters so a scan list does not need per-row aggregates.
+    # Written once, at the end of the scan, from what the pipeline produced.
+    endpoints_discovered: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    endpoints_analyzed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    endpoints_skipped: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    endpoints_failed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    forms_discovered: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    parameters_discovered: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    total_findings: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    critical_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    high_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    medium_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    low_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    info_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # Populated only when `status == FAILED`; safe to show to the scan's owner.
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 

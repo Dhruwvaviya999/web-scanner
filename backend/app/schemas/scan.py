@@ -63,6 +63,21 @@ class ScanRead(BaseModel):
     max_depth_reached: int | None
     crawl_limit_reached: bool | None
 
+    # Scan summary. Null when the corresponding stage did not run.
+    endpoints_discovered: int | None
+    endpoints_analyzed: int | None
+    endpoints_skipped: int | None
+    endpoints_failed: int | None
+    forms_discovered: int | None
+    parameters_discovered: int | None
+
+    total_findings: int | None
+    critical_count: int | None
+    high_count: int | None
+    medium_count: int | None
+    low_count: int | None
+    info_count: int | None
+
     error_message: str | None
 
 

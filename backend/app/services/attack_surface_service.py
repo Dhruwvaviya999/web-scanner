@@ -7,6 +7,7 @@ no session and imports no model.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -14,11 +15,14 @@ from sqlalchemy.orm import Session, selectinload
 from app.models.attack_surface import Endpoint, EndpointParameter, Form, FormField
 from app.models.scan import Scan
 from app.models.user import User
+from app.scanner.analysis.types import AnalysisResult, EndpointAnalysisStatus
 from app.scanner.crawler.types import CrawlResult, ParameterLocation
 from app.services import scan_service
 
 
-def replace_attack_surface(db: Session, scan: Scan, crawl: CrawlResult | None) -> None:
+def replace_attack_surface(
+    db: Session, scan: Scan, crawl: CrawlResult | None
+) -> dict[str, Endpoint]:
     """Store `crawl` as the complete attack surface for `scan`.
 
     Existing rows are cleared first so a re-run cannot leave stale endpoints
@@ -31,13 +35,14 @@ def replace_attack_surface(db: Session, scan: Scan, crawl: CrawlResult | None) -
     db.flush()
 
     if crawl is None:
-        return
+        return {}
 
     scan.pages_crawled = crawl.pages_crawled
     scan.pages_skipped = crawl.pages_skipped
     scan.max_depth_reached = crawl.max_depth_reached
     scan.crawl_limit_reached = crawl.limit_reached
 
+    endpoints_by_url: dict[str, Endpoint] = {}
     for discovered in crawl.endpoints:
         endpoint = Endpoint(
             scan_id=scan.id,
@@ -55,6 +60,7 @@ def replace_attack_surface(db: Session, scan: Scan, crawl: CrawlResult | None) -
             for name in discovered.parameters
         ]
         db.add(endpoint)
+        endpoints_by_url[discovered.url] = endpoint
 
     for discovered_form in crawl.forms:
         form = Form(
@@ -68,6 +74,31 @@ def replace_attack_surface(db: Session, scan: Scan, crawl: CrawlResult | None) -
             for field in discovered_form.fields
         ]
         db.add(form)
+
+    # Flush so every endpoint has an id before findings are linked to them.
+    db.flush()
+    return endpoints_by_url
+
+
+def apply_analysis(
+    db: Session, endpoints_by_url: Mapping[str, Endpoint], analysis: AnalysisResult | None
+) -> None:
+    """Record each endpoint's analysis outcome on its row.
+
+    An endpoint the analysis stage never reached keeps its NOT_ANALYZED default,
+    which is what distinguishes "not looked at" from "looked at and skipped".
+    """
+    if analysis is None:
+        return
+
+    for outcome in analysis.endpoint_analyses:
+        endpoint = endpoints_by_url.get(outcome.url)
+        if endpoint is None:
+            continue
+        endpoint.analysis_status = outcome.status
+        endpoint.skip_reason = outcome.skip_reason
+        endpoint.analysis_error = outcome.error
+    db.flush()
 
 
 def list_endpoints(db: Session, user: User, scan_id: uuid.UUID) -> list[Endpoint]:

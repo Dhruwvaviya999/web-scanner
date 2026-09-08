@@ -11,6 +11,7 @@ cannot reach the database through this path.
 from __future__ import annotations
 
 import enum
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 
@@ -112,6 +113,9 @@ class CrawlResult:
     #: normal termination, not a failure — the scan still completes.
     limit_reached: bool = False
     skip_reasons: dict[str, int] = field(default_factory=dict)
+    #: Captured responses keyed by canonical endpoint URL, so the analysis stage
+    #: can assess every crawled page without re-fetching it.
+    responses: dict[str, "CapturedResponse"] = field(default_factory=dict)
 
     def record_skip(self, reason: SkipReason) -> None:
         self.pages_skipped += 1
@@ -120,6 +124,24 @@ class CrawlResult:
     @property
     def parameter_count(self) -> int:
         return sum(len(endpoint.parameters) for endpoint in self.endpoints)
+
+
+@dataclass(frozen=True, slots=True)
+class CapturedResponse:
+    """The analysis-relevant slice of a crawled response.
+
+    Retained so the security detectors can assess every crawled page without
+    issuing a second request for it. Deliberately excludes the body: nothing in
+    the current detectors reads response content, and not keeping it means page
+    content cannot leak into a finding.
+    """
+
+    url: str
+    status_code: int
+    content_type: str | None
+    is_https: bool
+    headers: Mapping[str, str]
+    set_cookie: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,3 +156,16 @@ class FetchedPage:
     content_type: str | None
     body: bytes
     is_html: bool
+    is_https: bool = True
+    headers: Mapping[str, str] = field(default_factory=dict)
+    set_cookie: tuple[str, ...] = ()
+
+    def captured(self) -> CapturedResponse:
+        return CapturedResponse(
+            url=self.url,
+            status_code=self.status_code,
+            content_type=self.content_type,
+            is_https=self.is_https,
+            headers=self.headers,
+            set_cookie=self.set_cookie,
+        )
