@@ -2,8 +2,15 @@
 
 A web application for running and tracking HTTP reconnaissance scans against sites you own.
 
-**This is the Phase 6 release: security-configuration analysis plus the first active
-vulnerability detector.** It provides authentication, scan management, a bounded HTTP probe, a
+**This is the Phase 7 release: the active-probe framework.** Phase 6's reflected-XSS
+detector now runs on reusable infrastructure — a probe engine that owns scope, budget, timeouts
+and error handling, so a future detector inherits all of it rather than reimplementing it.
+XSS behaviour is unchanged by the refactor.
+
+**Reflected XSS remains the only active detector.** There is no SQL-injection, stored-XSS,
+DOM-XSS, CSRF, SSRF, IDOR or open-redirect detection.
+
+Phase 6 introduced that detector: It provides authentication, scan management, a bounded HTTP probe, a
 bounded same-origin crawler, security-header and cookie analysis of every endpoint the crawl
 reached, and **reflected cross-site-scripting detection** on discovered query parameters — all
 deduplicated by rule identity, linked to the endpoints they affect, and reported with explicit
@@ -112,6 +119,13 @@ web-scanner/
 │           │   ├── endpoint_analyzer.py  # eligibility + per-endpoint run (pure)
 │           │   ├── aggregator.py      # deduplication by rule identity (pure)
 │           │   └── module.py          # glue: captured responses -> findings
+│           ├── active/               # active-probe framework
+│           │   ├── types.py           # ProbeTarget/Request/Outcome, detector protocol
+│           │   ├── budget.py          # nested probe budgets, fails closed
+│           │   ├── requests.py        # URL construction + marker generation (pure)
+│           │   ├── comparison.py      # generic response comparison (pure)
+│           │   ├── engine.py          # the only route to the network
+│           │   └── module.py          # runs registered detectors
 │           ├── vulnerabilities/       # active detectors
 │           │   └── xss/
 │           │       ├── types.py       # contexts, encoding states, probe
@@ -263,7 +277,7 @@ Always change the schema through a migration; never edit the database by hand.
 
 ```bash
 cd backend
-.venv\Scripts\python -m pytest          # 231 tests
+.venv\Scripts\python -m pytest          # 270 tests
 ```
 
 | Suite | Covers |
@@ -279,6 +293,7 @@ cd backend
 | `test_xss_analyzer.py` | Reflection contexts, encoding, false-positive control |
 | `test_xss_detector.py` | Probe budget, scope, non-HTML skipping, failure handling |
 | `test_xss_integration.py` | XSS findings inside the existing finding architecture |
+| `test_active_framework.py` | Probe building, budgets, comparison, engine scope and errors |
 | `test_findings_api.py` | Findings API ownership and isolation |
 | `test_attack_surface_api.py` | Endpoint/form API ownership and isolation |
 
@@ -847,6 +862,106 @@ parameters are not tested.
 
 ---
 
+## Active probe framework (Phase 7)
+
+Active detectors need the same handful of mechanics: a baseline, a controlled probe, bounded
+request counts, response comparison, scope enforcement, timeouts, and failure handling that does
+not end the scan. Phase 7 extracts those from the XSS detector so the next one does not
+reimplement them — and, more importantly, so the safety rules live in exactly one place.
+
+```
+Attack surface
+      |
+ActiveScanModule        picks targets, runs registered detectors
+      |
+Detector.eligible()     pure filter — no requests are sent for an ineligible target
+      |
+Detector.probe(engine)
+      |
+ProbeEngine.send()      SCOPE + BUDGET + TIMEOUT + ERROR HANDLING
+      |
+HttpFetcher             the same transport the probe and crawler use
+      |
+RawHttpResponse
+      |
+detector analyzer       pure interpretation (for XSS: analyzer.py)
+      |
+detector findings       pure judgement    (for XSS: findings.py)
+      |
+FindingData -> Aggregator -> database
+```
+
+### The detector interface
+
+```python
+class ActiveDetector(Protocol):
+    name: str
+    def eligible(self, target: ProbeTarget) -> Eligibility: ...
+    async def probe(self, target: ProbeTarget, engine: ProbeEngine) -> Sequence[DetectorObservation]: ...
+```
+
+Two methods, not four. Response interpretation and finding construction are deliberately *off*
+the interface: they are pure functions in their own modules that the detector calls. Keeping them
+off is what stops network code and judgement code from merging back together.
+
+**A detector receives a `ProbeEngine`, never a transport.** It cannot open a connection, choose a
+host, or construct a URL of its own — it names a parameter and a value, and the framework builds
+the request. There is no way to write a detector that bypasses the scanner's scope rules.
+
+### Probe budgets
+
+Three nested limits, all enforced in `ProbeBudget` and **shared by every detector in a scan**:
+
+| Setting | Default | Scope |
+| ------- | ------- | ----- |
+| `MAX_ACTIVE_PROBES_PER_PARAMETER` | 4 | One input on one endpoint |
+| `MAX_ACTIVE_PROBES_PER_ENDPOINT` | 24 | All inputs on one endpoint |
+| `MAX_ACTIVE_PROBES_PER_SCAN` | 120 | The whole scan, across all detectors |
+| `ACTIVE_SCAN_MAX_TARGETS` | 25 | Endpoints considered |
+| `ACTIVE_SCAN_ENABLED` | true | Turns off all active probing |
+
+The budget **fails closed**: `reserve()` returns False when any limit is reached, the engine
+refuses to send, and a refused reservation consumes nothing. There is no path that treats an
+exhausted budget as permission to continue.
+
+### Baseline
+
+The framework does not assume one baseline per test. `ProbeRequest` carries a `purpose`
+(`BASELINE` or `PROBE`) and a detector issues whatever sequence it needs. Reflected XSS uses
+baseline-then-probe; a future detector needing three baselines is not obstructed.
+
+### Response comparison
+
+Pure, generic utilities in `active/comparison.py`: `status_changed`, `content_type_changed`,
+`final_url_changed`, `size_delta`, `timing_delta_ms`, `body_similarity`, `contains_marker`, and
+`compare()` which returns all of them as a `ResponseDelta`.
+
+The line is drawn deliberately: `status_changed` belongs to the framework, `is_sql_injection`
+belongs to a detector. Keeping vulnerability conclusions out is what lets several detectors share
+these without inheriting each other's judgement.
+
+### Scope: unchanged and centralised
+
+Active probes go through the same `HttpFetcher` as everything else, so every protection applies
+without being restated: URL validation, the SSRF guard, the same-origin lock re-checked on each
+redirect hop, allowed schemes, the redirect limit and the request timeout. The engine adds two
+checks of its own — it revalidates the constructed URL before connecting, and rejects a response
+whose final URL left the origin.
+
+### Sensitive data
+
+Probe values and markers exist only in memory for the duration of a scan. Nothing from a probe is
+persisted: findings carry normalised evidence naming the parameter and the context, never a
+value. Logs record the endpoint *path* and the parameter *name* only — never a probe URL, a
+probe value, or a request header.
+
+### What uses it
+
+**Only the reflected-XSS detector.** The framework exists to be reused, but at the end of this
+phase there is exactly one active detector, and adding another is future work.
+
+---
+
 ## API overview
 
 All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
@@ -961,7 +1076,10 @@ the server and mirrored by Zod in the browser; the server is authoritative.
 * **Only cookies set on the scanned response are seen.** Cookies set after login, or by
   JavaScript, are invisible to this scanner.
 * **Only one vulnerability class is actively tested.** Reflected XSS on GET query parameters.
-  There is no SQL-injection, CSRF, SSRF, IDOR or open-redirect testing.
+  The Phase 7 framework is built to carry more detectors, but none exist yet — there is no
+  SQL-injection, CSRF, SSRF, IDOR or open-redirect testing.
+* **Active probing covers GET query parameters only.** POST bodies, path segments, headers and
+  cookies are not probed; extending the input surface is future work.
 * **No stored XSS.** A payload that is saved and rendered on a later request is never seen: the
   detector only compares one response to the request that produced it.
 * **No DOM XSS, no JavaScript execution, no browser engine.** The analysis is static. A sink
@@ -1016,10 +1134,11 @@ Planned, in order. Everything from Phase 3 onward is unimplemented.
 | 3 | `Finding` model, security-header and cookie analysis | done |
 | 4 | Crawler, endpoint / parameter / form discovery | done |
 | 5 | Per-endpoint analysis, finding identity, deduplication, coverage | done |
-| 6 | Reflected XSS detection on query parameters | **done - current release** |
-| 7 | TLS inspection, CORS policy, risk scoring | planned |
-| 8 | Further active testing: SQL injection, open redirect, API security checks | planned |
-| 9 | Reporting and export, background execution for long-running scans | planned |
+| 6 | Reflected XSS detection on query parameters | done |
+| 7 | Reusable active-probe framework; XSS migrated onto it | **done - current release** |
+| 8 | TLS inspection, CORS policy, risk scoring | planned |
+| 9 | Further active testing: SQL injection, open redirect, API security checks | planned |
+| 10 | Reporting and export, background execution for long-running scans | planned |
 
 The attack surface discovered in Phase 4 is what later detectors will consume: endpoints and
 their parameters are the injection points an XSS or SQL-injection check needs, and forms are

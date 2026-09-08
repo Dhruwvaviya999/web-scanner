@@ -13,8 +13,9 @@ import asyncio
 import logging
 
 from app.scanner.analysis.module import EndpointAnalysisModule
-from app.scanner.vulnerabilities.xss.detector import XssConfig
-from app.scanner.vulnerabilities.xss.module import ReflectedXssModule
+from app.scanner.active.module import ActiveScanConfig, ActiveScanModule
+from app.scanner.active.types import ActiveDetector
+from app.scanner.vulnerabilities.xss.detector import ReflectedXssDetector
 from app.scanner.crawler.module import CrawlModule
 from app.scanner.crawler.types import CrawlConfig
 from app.scanner.http_scanner import HttpProbeModule
@@ -36,11 +37,17 @@ class WebScanner:
         config: ScannerConfig | None = None,
         modules: list[ScanModule] | None = None,
         crawl_config: CrawlConfig | None = None,
-        xss_config: XssConfig | None = None,
+        active_config: ActiveScanConfig | None = None,
+        detectors: list[ActiveDetector] | None = None,
     ) -> None:
         self._config = config or ScannerConfig()
         self._crawl_config = crawl_config or CrawlConfig()
-        self._xss_config = xss_config or XssConfig()
+        self._active_config = active_config or ActiveScanConfig()
+        # Which active detectors run. Kept a caller-supplied list so the scanner
+        # package needs no knowledge of application settings.
+        self._detectors: list[ActiveDetector] = (
+            detectors if detectors is not None else [ReflectedXssDetector()]
+        )
         # Order matters: the probe fetches, then the detectors interpret what it
         # fetched. Later phases append further modules to this list.
         self._modules: list[ScanModule] = (
@@ -54,8 +61,9 @@ class WebScanner:
                 CrawlModule(self._config, self._crawl_config),
                 EndpointAnalysisModule(),
                 # Active probing runs last: it needs the discovered parameters,
-                # and its findings join the same aggregation.
-                ReflectedXssModule(self._config, self._xss_config),
+                # and its findings join the same aggregation. Adding a detector
+                # later means extending this list, nothing more.
+                ActiveScanModule(self._config, self._active_config, self._detectors),
             ]
         )
 

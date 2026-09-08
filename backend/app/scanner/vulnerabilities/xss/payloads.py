@@ -17,8 +17,7 @@ classify a reflection without ever attempting execution.
 
 from __future__ import annotations
 
-import secrets
-
+from app.scanner.active.requests import generate_unique_marker
 from app.scanner.vulnerabilities.xss.types import XssProbe
 
 #: Prefix that makes a marker recognisable in logs and unlikely to collide with
@@ -40,11 +39,11 @@ CANARY_CHARACTERS = frozenset(CANARY)
 def new_token() -> str:
     """A fresh, unique, purely alphanumeric token.
 
-    Alphanumeric on purpose: it passes through validation, escaping and
-    URL-encoding unchanged, so if it fails to appear in a response the reason is
-    that the value was not reflected — not that it was mangled.
+    Generation itself is generic, so it comes from the active-probe framework.
+    What the token is *wrapped in* — the bracketed canary below — is specific to
+    reflected XSS and stays here.
     """
-    return f"{TOKEN_PREFIX}{secrets.token_hex(TOKEN_RANDOM_LENGTH // 2)}"
+    return generate_unique_marker(length=TOKEN_RANDOM_LENGTH, prefix=TOKEN_PREFIX)
 
 
 def new_probe() -> XssProbe:

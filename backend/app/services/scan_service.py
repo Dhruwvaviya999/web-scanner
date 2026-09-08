@@ -20,7 +20,8 @@ from app.models.scan import Scan, ScanStatus
 from app.models.user import User
 from app.scanner import CrawlConfig, ScannerConfig, ScanReport, WebScanner
 from app.scanner.security.types import FindingSeverity
-from app.scanner.vulnerabilities.xss.detector import XssConfig
+from app.scanner import ActiveScanConfig, ProbeBudgetLimits
+from app.scanner.vulnerabilities.xss.detector import ReflectedXssDetector
 from app.services import attack_surface_service, finding_service
 
 logger = logging.getLogger(__name__)
@@ -50,12 +51,16 @@ def _crawl_config() -> CrawlConfig:
     )
 
 
-def _xss_config() -> XssConfig:
-    return XssConfig(
-        enabled=settings.XSS_ENABLED,
-        max_parameters_per_endpoint=settings.XSS_MAX_PARAMETERS_PER_ENDPOINT,
-        max_requests_per_scan=settings.XSS_MAX_REQUESTS_PER_SCAN,
-        max_endpoints=settings.XSS_MAX_ENDPOINTS,
+def _active_config() -> ActiveScanConfig:
+    """Budgets for the active-probe stage, shared by every detector."""
+    return ActiveScanConfig(
+        enabled=settings.ACTIVE_SCAN_ENABLED,
+        limits=ProbeBudgetLimits(
+            per_parameter=settings.MAX_ACTIVE_PROBES_PER_PARAMETER,
+            per_endpoint=settings.MAX_ACTIVE_PROBES_PER_ENDPOINT,
+            per_scan=settings.MAX_ACTIVE_PROBES_PER_SCAN,
+        ),
+        max_targets=settings.ACTIVE_SCAN_MAX_TARGETS,
     )
 
 
@@ -77,7 +82,16 @@ def create_scan(db: Session, user: User, target_url: str) -> Scan:
     db.commit()
 
     report = WebScanner(
-        _scanner_config(), crawl_config=_crawl_config(), xss_config=_xss_config()
+        _scanner_config(),
+        crawl_config=_crawl_config(),
+        active_config=_active_config(),
+        # The only active detector at this phase. Adding one later is a change
+        # to this list, not to the pipeline.
+        detectors=[
+            ReflectedXssDetector(
+                max_parameters_per_endpoint=settings.XSS_MAX_PARAMETERS_PER_ENDPOINT
+            )
+        ],
     ).scan_sync(target_url)
     _apply_report(scan, report)
 

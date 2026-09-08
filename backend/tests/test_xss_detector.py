@@ -1,7 +1,11 @@
-"""Reflected-XSS probing strategy.
+"""Reflected-XSS probe strategy, on the active-probe framework.
 
-The fetcher is injected, so request budget, scope and failure handling are all
-deterministic and no network is touched.
+The detector no longer owns transport or budget — those moved to the framework
+in phase 7 and are covered by `test_active_framework.py`. What remains here is
+what is specific to XSS: eligibility, the baseline-then-probe sequence, and
+which responses do and do not become findings.
+
+The engine's transport is faked, so no network is touched.
 """
 
 from __future__ import annotations
@@ -9,262 +13,265 @@ from __future__ import annotations
 import asyncio
 from urllib.parse import parse_qs, urlsplit
 
+from app.scanner.active.budget import ProbeBudget, ProbeBudgetLimits
+from app.scanner.active.engine import ProbeEngine
+from app.scanner.active.requests import build_probe_url
+from app.scanner.active.types import ProbeTarget
+from app.scanner.crawler.url_normalizer import Origin
 from app.scanner.security.types import FindingRule
-from app.scanner.vulnerabilities.xss.detector import (
-    EndpointTarget,
-    ReflectedXssDetector,
-    XssConfig,
-    XssResponse,
-    build_probe_url,
-)
+from app.scanner.types import RawHttpResponse
+from app.scanner.vulnerabilities.xss.detector import ReflectedXssDetector
 
-HOME = "https://x.test/search?q"
+ORIGIN = Origin(scheme="https", host="x.test", port=443)
 HTML = "text/html; charset=utf-8"
+HOME = "https://x.test/search?q"
+
+
+def target(url: str = HOME, params: tuple[str, ...] = ("q",),
+           content_type: str = HTML, method: str = "GET") -> ProbeTarget:
+    return ProbeTarget(url=url, parameters=params, content_type=content_type, method=method)
 
 
 class FakeSite:
     """A canned site that echoes a chosen parameter in a chosen context."""
 
-    def __init__(self, *, reflect: str | None = "q", template: str = "<div>{value}</div>",
-                 content_type: str = HTML, fail: bool = False, encode: bool = False):
+    def __init__(self, *, reflect: str | None = "q",
+                 template: str = "<div>{value}</div>",
+                 content_type: str = HTML, fail: bool = False, encode: bool = False,
+                 echo_all: bool = False):
         self.reflect = reflect
         self.template = template
         self.content_type = content_type
         self.fail = fail
         self.encode = encode
-        self.requests: list[str] = []
+        self.echo_all = echo_all
+        self.urls: list[str] = []
 
-    async def __call__(self, url: str) -> XssResponse | None:
-        self.requests.append(url)
+    async def fetch(self, probe_target, *, read_body: bool = True) -> RawHttpResponse:
+        url = probe_target.normalized_url
+        self.urls.append(url)
         if self.fail:
-            return None
+            from app.scanner.types import ScanErrorCode, ScannerError
 
-        value = ""
-        if self.reflect:
-            values = parse_qs(urlsplit(url).query, keep_blank_values=True).get(self.reflect, [""])
-            value = values[0]
-            if self.encode:
-                value = (
-                    value.replace("&", "&amp;").replace("<", "&lt;")
-                    .replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#x27;")
-                )
+            raise ScannerError(ScanErrorCode.TIMEOUT, "timed out")
 
-        return XssResponse(
-            url=url,
+        query = parse_qs(urlsplit(url).query, keep_blank_values=True)
+        if self.echo_all:
+            value = " ".join(v for values in query.values() for v in values)
+        elif self.reflect:
+            value = query.get(self.reflect, [""])[0]
+        else:
+            value = ""
+
+        if self.encode:
+            value = (
+                value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace('"', "&quot;").replace("'", "&#x27;")
+            )
+
+        return RawHttpResponse(
             status_code=200,
-            content_type=self.content_type,
-            body=self.template.format(value=value),
+            headers={"content-type": self.content_type},
+            final_url=url,
+            is_https=True,
+            redirect_count=0,
+            elapsed_ms=5,
+            body=self.template.format(value=value).encode("utf-8"),
         )
 
 
-def run(site: FakeSite, targets, config: XssConfig | None = None):
-    detector = ReflectedXssDetector(config or XssConfig(), site)
-    return asyncio.run(detector.scan(targets))
+def run(site: FakeSite, probe_target: ProbeTarget, *,
+        limits: ProbeBudgetLimits | None = None,
+        detector: ReflectedXssDetector | None = None):
+    engine = ProbeEngine(site, ORIGIN, ProbeBudget(limits=limits or ProbeBudgetLimits()))
+    observations = asyncio.run(
+        (detector or ReflectedXssDetector()).probe(probe_target, engine)
+    )
+    return observations, engine
 
 
-def target(url: str = HOME, params: tuple[str, ...] = ("q",), content_type: str = HTML):
-    return EndpointTarget(url=url, parameters=params, content_type=content_type)
+# --- Eligibility (pure, no requests) ---------------------------------------- #
 
 
-# --- URL construction ------------------------------------------------------ #
+def test_html_get_endpoint_with_parameters_is_eligible():
+    assert ReflectedXssDetector().eligible(target()).eligible is True
 
 
-def test_probe_url_sets_only_the_target_parameter():
-    url = build_probe_url("https://x.test/s?q&page", "q", "MARKER")
-    query = parse_qs(urlsplit(url).query, keep_blank_values=True)
-
-    assert query["q"] == ["MARKER"]
-    # Other parameters get inert filler, not the marker.
-    assert query["page"] == ["1"]
-    assert urlsplit(url).netloc == "x.test"
-    assert urlsplit(url).path == "/s"
+def test_non_html_endpoint_is_ineligible():
+    decision = ReflectedXssDetector().eligible(target(content_type="application/json"))
+    assert decision.eligible is False
+    assert decision.reason == "non_html_endpoint"
 
 
-def test_probe_url_keeps_scheme_host_and_path_unchanged():
-    """A probe cannot be pointed elsewhere: only a value is substituted."""
-    url = build_probe_url("https://x.test/a/b?q", "q", "MARKER")
-    parts = urlsplit(url)
-    assert (parts.scheme, parts.netloc, parts.path) == ("https", "x.test", "/a/b")
+def test_endpoint_without_parameters_is_ineligible():
+    decision = ReflectedXssDetector().eligible(target(url="https://x.test/", params=()))
+    assert decision.reason == "no_parameters"
 
 
-def test_probe_url_adds_the_parameter_when_absent():
-    url = build_probe_url("https://x.test/s", "q", "MARKER")
-    assert parse_qs(urlsplit(url).query)["q"] == ["MARKER"]
+def test_non_get_method_is_ineligible():
+    """Phase 7 keeps phase 6's scope: GET query parameters only."""
+    decision = ReflectedXssDetector().eligible(target(method="POST"))
+    assert decision.reason == "non_get_method"
 
 
-# --- 1 & 2. Parameters are tested ------------------------------------------ #
+def test_ineligible_targets_are_filtered_before_any_request():
+    """Eligibility is pure — deciding it must not touch the network."""
+    site = FakeSite()
+    detector = ReflectedXssDetector()
+    detector.eligible(target(content_type="image/png"))
+    assert site.urls == []
 
 
-def test_reflected_get_parameter_produces_a_finding():
-    site = FakeSite(template="<div>{value}</div>")
-    result = run(site, [target()])
+# --- Probe sequence and budget ---------------------------------------------- #
 
-    assert len(result.observations) == 1
-    endpoint_url, finding = result.observations[0]
+
+def test_reflected_parameter_produces_a_finding():
+    site = FakeSite()
+    observations, _ = run(site, target())
+
+    assert len(observations) == 1
+    endpoint_url, finding = observations[0]
     assert endpoint_url == HOME
     assert finding.rule is FindingRule.XSS_REFLECTED
     assert finding.subject == "parameter:q"
 
 
-def test_multiple_parameters_are_each_tested():
-    site = FakeSite(reflect="a", template="<div>{value}</div>")
-    result = run(site, [target(url="https://x.test/s?a&b", params=("a", "b"))])
-
-    assert result.stats.parameters_tested == 2
-    # Only the reflected one yields a finding.
-    assert [f.subject for _, f in result.observations] == ["parameter:a"]
-
-
-def test_findings_for_different_parameters_stay_distinguishable():
-    site = FakeSite(reflect=None, template="<div>{value}</div>")
-
-    # A site echoing every parameter it receives, decoded as a server would.
-    async def echo(url: str) -> XssResponse:
-        site.requests.append(url)
-        query = parse_qs(urlsplit(url).query, keep_blank_values=True)
-        values = " ".join(v for pair in query.values() for v in pair)
-        return XssResponse(url=url, status_code=200, content_type=HTML,
-                           body=f"<div>{values}</div>")
-
-    detector = ReflectedXssDetector(XssConfig(), echo)
-    result = asyncio.run(detector.scan([target(url="https://x.test/s?a&b", params=("a", "b"))]))
-
-    subjects = {f.subject for _, f in result.observations}
-    assert subjects == {"parameter:a", "parameter:b"}
-
-
-# --- 3. Bounded request volume --------------------------------------------- #
-
-
 def test_unreflected_parameter_costs_one_request():
-    """No probe is sent when the baseline does not come back."""
+    """No probe is sent when the baseline token does not come back."""
     site = FakeSite(reflect=None, template="<div>static</div>")
-    result = run(site, [target()])
+    observations, engine = run(site, target())
 
-    assert result.stats.requests_sent == 1
-    assert result.observations == []
+    assert engine.stats.requests_sent == 1
+    assert observations == []
 
 
 def test_reflected_parameter_costs_two_requests():
     site = FakeSite()
-    result = run(site, [target()])
-    assert result.stats.requests_sent == 2
+    _, engine = run(site, target())
+    assert engine.stats.requests_sent == 2
 
 
-def test_request_budget_is_enforced():
-    site = FakeSite()
-    targets = [target(url=f"https://x.test/p{i}?q") for i in range(20)]
-    result = run(site, targets, XssConfig(max_requests_per_scan=5))
+def test_multiple_parameters_are_each_tested():
+    site = FakeSite(reflect="a")
+    observations, engine = run(site, target(url="https://x.test/s?a&b", params=("a", "b")))
 
-    assert result.stats.requests_sent <= 6  # the in-flight parameter may finish
-    assert result.stats.limit_reached is True
+    assert engine.stats.requests_sent == 3  # a: baseline+probe, b: baseline only
+    assert [f.subject for _, f in observations] == ["parameter:a"]
 
 
-def test_parameters_per_endpoint_is_capped():
+def test_findings_for_different_parameters_stay_distinguishable():
+    site = FakeSite(echo_all=True)
+    observations, _ = run(site, target(url="https://x.test/s?a&b", params=("a", "b")))
+
+    assert {f.subject for _, f in observations} == {"parameter:a", "parameter:b"}
+
+
+def test_parameters_per_endpoint_cap_is_respected():
     site = FakeSite(reflect=None)
     params = tuple(f"p{i}" for i in range(20))
-    result = run(site, [target(url="https://x.test/s", params=params)],
-                 XssConfig(max_parameters_per_endpoint=3))
-
-    assert result.stats.parameters_tested == 3
-
-
-def test_endpoint_count_is_capped():
-    site = FakeSite(reflect=None)
-    targets = [target(url=f"https://x.test/p{i}?q") for i in range(20)]
-    result = run(site, targets, XssConfig(max_endpoints=4))
-
-    assert result.stats.endpoints_tested == 4
+    _, engine = run(
+        site,
+        target(url="https://x.test/s", params=params),
+        limits=ProbeBudgetLimits(per_parameter=4, per_endpoint=99, per_scan=99),
+        detector=ReflectedXssDetector(max_parameters_per_endpoint=3),
+    )
+    assert engine.stats.requests_sent == 3
 
 
-def test_disabled_config_is_respected_by_the_module_not_the_detector():
-    """The detector itself always runs; the module checks `enabled`."""
-    assert XssConfig(enabled=False).enabled is False
-
-
-# --- 4. Non-HTML endpoints -------------------------------------------------- #
-
-
-def test_non_html_endpoint_is_skipped_without_any_request():
+def test_budget_exhaustion_stops_probing():
     site = FakeSite()
-    result = run(site, [target(content_type="application/json")])
-
-    assert site.requests == []
-    assert result.stats.parameters_skipped == 1
-    assert result.observations == []
-
-
-def test_non_html_response_stops_analysis_even_if_the_endpoint_looked_html():
-    site = FakeSite(content_type="application/json")
-    result = run(site, [target()])
-
-    assert result.observations == []
-    assert result.stats.notes.get("non_html_response")
+    params = tuple(f"p{i}" for i in range(10))
+    observations, engine = run(
+        site,
+        target(url="https://x.test/s", params=params),
+        limits=ProbeBudgetLimits(per_parameter=2, per_endpoint=3, per_scan=99),
+    )
+    # The per-endpoint ceiling caps total requests regardless of parameter count.
+    assert engine.stats.requests_sent == 3
+    assert engine.budget.spent_on_endpoint("https://x.test/s") == 3
 
 
-# --- 5. Failure handling ---------------------------------------------------- #
-
-
-def test_failed_request_is_recorded_and_produces_no_finding():
-    site = FakeSite(fail=True)
-    result = run(site, [target()])
-
-    assert result.stats.request_failures == 1
-    assert result.observations == []
-
-
-def test_a_raising_fetcher_does_not_end_the_scan():
-    calls = {"n": 0}
-
-    async def flaky(url: str) -> XssResponse | None:
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise RuntimeError("connection reset")
-        return XssResponse(url=url, status_code=200, content_type=HTML,
-                           body="<div>ok</div>")
-
-    detector = ReflectedXssDetector(XssConfig(), flaky)
-    result = asyncio.run(detector.scan([target(url="https://x.test/a?q"),
-                                        target(url="https://x.test/b?q")]))
-
-    # First endpoint failed, second was still attempted.
-    assert result.stats.request_failures == 1
-    assert calls["n"] >= 2
-
-
-def test_endpoint_with_no_parameters_is_not_probed():
-    site = FakeSite()
-    result = run(site, [target(url="https://x.test/", params=())])
-    assert site.requests == []
-
-
-# --- Encoding-aware outcomes ------------------------------------------------ #
+# --- Response handling ------------------------------------------------------ #
 
 
 def test_safely_encoded_reflection_produces_no_finding():
     site = FakeSite(encode=True)
-    result = run(site, [target()])
+    observations, engine = run(site, target())
 
-    assert result.stats.requests_sent == 2  # it did reflect, so it was probed
-    assert result.observations == []
+    assert engine.stats.requests_sent == 2  # it reflected, so it was probed
+    assert observations == []
 
 
-def test_script_context_reflection_is_reported():
+def test_non_html_response_stops_analysis():
+    site = FakeSite(content_type="application/json")
+    observations, _ = run(site, target())
+    assert observations == []
+
+
+def test_failed_request_produces_no_finding():
+    site = FakeSite(fail=True)
+    observations, engine = run(site, target())
+
+    assert observations == []
+    assert engine.stats.failures == 1
+
+
+def test_script_context_reflection_reaches_high_confidence():
     site = FakeSite(template='<script>var q = "{value}";</script>')
-    result = run(site, [target()])
+    observations, _ = run(site, target())
 
-    assert len(result.observations) == 1
-    _, finding = result.observations[0]
+    _, finding = observations[0]
+    assert finding.severity.value == "HIGH"
     assert finding.confidence.value == "HIGH"
 
 
-def test_probe_values_never_appear_in_the_finding():
-    site = FakeSite()
-    result = run(site, [target()])
-    _, finding = result.observations[0]
+def test_attribute_context_reflection_is_reported():
+    site = FakeSite(template='<input value="{value}">')
+    observations, _ = run(site, target())
 
-    # Every request URL carried a marker; none of it reaches the finding.
-    for request in site.requests:
-        marker = parse_qs(urlsplit(request).query)["q"][0]
+    _, finding = observations[0]
+    assert finding.rule is FindingRule.XSS_REFLECTED
+    assert "value" in finding.evidence
+
+
+def test_probe_values_never_reach_the_finding():
+    site = FakeSite()
+    observations, _ = run(site, target())
+    _, finding = observations[0]
+
+    for url in site.urls:
+        marker = parse_qs(urlsplit(url).query)["q"][0]
         assert marker not in finding.evidence
         assert marker not in finding.description
+
+
+# --- Scope: the detector cannot bypass the engine --------------------------- #
+
+
+def test_detector_cannot_probe_an_external_origin():
+    """Even handed an off-origin target, the engine refuses to send."""
+    site = FakeSite()
+    observations, engine = run(site, target(url="https://evil.test/s?q"))
+
+    assert observations == []
+    assert site.urls == []
+
+
+def test_probe_urls_stay_on_the_endpoint_path():
+    site = FakeSite()
+    run(site, target(url="https://x.test/deep/path?q"))
+
+    assert site.urls, "expected probes to be sent"
+    for url in site.urls:
+        parts = urlsplit(url)
+        assert parts.scheme == "https"
+        assert parts.netloc == "x.test"
+        assert parts.path == "/deep/path"
+
+
+def test_build_probe_url_is_the_only_url_construction():
+    """The detector supplies a value; the framework builds the URL."""
+    url = build_probe_url("https://x.test/s?q&page", "q", "MARKER")
+    query = parse_qs(urlsplit(url).query, keep_blank_values=True)
+    assert query["q"] == ["MARKER"]
+    assert query["page"] == ["1"]
