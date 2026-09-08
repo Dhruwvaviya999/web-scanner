@@ -1,0 +1,22 @@
+# Pinned against CPython 3.14 (standard build, NOT the free-threading build).
+
+# --- Web framework ---
+fastapi==0.141.1
+uvicorn==0.52.4
+
+# --- Validation & settings ---
+pydantic==2.13.5
+pydantic-settings==2.15.0
+email-validator==2.3.0
+
+# --- Database ---
+SQLAlchemy==2.0.52
+alembic==1.19.2
+psycopg[binary]==3.3.5
+
+# --- Security ---
+PyJWT==2.13.0
+argon2-cffi==25.1.0
+
+# --- Scanner HTTP client ---
+httpx==0.28.1

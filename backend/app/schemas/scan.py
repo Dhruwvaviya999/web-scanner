@@ -1,0 +1,73 @@
+"""Scan request/response schemas."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.models.scan import ScanStatus
+from app.scanner import ScannerError, parse_target_url
+
+
+class ScanCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    target_url: str = Field(
+        min_length=1,
+        max_length=2048,
+        description="The http(s) URL to scan. A bare hostname is treated as https://",
+        examples=["https://example.com"],
+    )
+
+    @field_validator("target_url")
+    @classmethod
+    def _validate_url(cls, value: str) -> str:
+        """Reject malformed targets during request validation (422).
+
+        Only syntax is checked here; the DNS/SSRF check runs in the scanner, so
+        that request handling never blocks on name resolution.
+        """
+        try:
+            return parse_target_url(value).normalized_url
+        except ScannerError as exc:
+            raise ValueError(exc.message) from exc
+
+
+class ScanRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    target_url: str
+    status: ScanStatus
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    http_status_code: int | None
+    response_time_ms: int | None
+    final_url: str | None
+    content_type: str | None
+    server_header: str | None
+    is_https: bool | None
+    redirect_count: int | None
+    error_message: str | None
+
+
+class ScanListResponse(BaseModel):
+    items: list[ScanRead]
+    total: int
+    limit: int
+    offset: int
+
+
+class ScanStats(BaseModel):
+    """Counters backing the dashboard summary cards."""
+
+    total: int
+    pending: int
+    running: int
+    completed: int
+    failed: int
