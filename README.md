@@ -2,13 +2,14 @@
 
 A web application for running and tracking HTTP reconnaissance scans against sites you own.
 
-**This is the Phase 3 release: a basic security-configuration scanner.** It provides
-authentication, scan management, one bounded HTTP request per scan, and analysis of that
-response's security headers and cookies, recorded as structured findings.
+**This is the Phase 4 release: security-configuration analysis plus attack-surface
+discovery.** It provides authentication, scan management, a bounded HTTP probe, analysis of the
+response's security headers and cookies recorded as structured findings, and a bounded
+same-origin crawler that maps the target's reachable URLs, query parameters and forms.
 
-**It performs no vulnerability testing.** No payloads are sent. There is no crawling, no TLS
-inspection, no XSS, SQL-injection, CSRF, SSRF or IDOR testing, no CORS analysis and no risk
-scoring.
+**It performs no vulnerability testing.** No payloads are sent and no form is ever submitted.
+There is no TLS inspection, no XSS, SQL-injection, CSRF, SSRF or IDOR testing, no CORS analysis
+and no risk scoring.
 
 > The scanner currently performs basic HTTP and security-configuration analysis. **It does not
 > guarantee that a website is secure.** A scan with no findings means the specific checks listed
@@ -72,7 +73,8 @@ web-scanner/
 │   │   └── versions/
 │   │       ├── 0001_initial_schema.py
 │   │       ├── 0002_scan_response_analysis.py
-│   │       └── 0003_findings.py
+│   │       ├── 0003_findings.py
+│   │       └── 0004_attack_surface.py
 │   └── app/
 │       ├── main.py                    # app wiring, CORS, exception handlers
 │       ├── core/
@@ -82,21 +84,27 @@ web-scanner/
 │       │   ├── cookies.py             # httpOnly auth cookie
 │       │   ├── deps.py                # get_current_user, DbSession
 │       │   └── errors.py              # error types + structured payload
-│       ├── models/                    # user.py, scan.py, finding.py
-│       ├── schemas/                   # auth.py, user.py, scan.py, finding.py, common.py
+│       ├── models/                    # user, scan, finding, attack_surface
+│       ├── schemas/                   # auth, user, scan, finding, attack_surface, common
 │       ├── routers/                   # auth.py, users.py, scans.py
-│       ├── services/                  # auth_service.py, scan_service.py, finding_service.py
+│       ├── services/                  # auth, scan, finding, attack_surface
 │       └── scanner/                   # isolated engine
 │           ├── types.py               # dataclasses + ScanModule protocol
 │           ├── url_validator.py       # parsing + SSRF protection
 │           ├── http_scanner.py        # transport: request, redirects, bounded read
 │           ├── response_analyzer.py   # interpretation: title, type, size (pure)
 │           ├── scanner.py             # orchestrator
-│           └── security/              # detectors, all pure
-│               ├── types.py           # FindingData + severity/confidence/category
-│               ├── headers.py         # security-header rules
-│               ├── cookies.py         # Set-Cookie parsing + cookie rules
-│               └── module.py          # glue: response -> findings
+│           ├── security/              # detectors, all pure
+│           │   ├── types.py           # FindingData + severity/confidence/category
+│           │   ├── headers.py         # security-header rules
+│           │   ├── cookies.py         # Set-Cookie parsing + cookie rules
+│           │   └── module.py          # glue: response -> findings
+│           └── crawler/               # attack-surface discovery
+│               ├── types.py           # CrawlConfig + discovered resources
+│               ├── url_normalizer.py  # normalisation + same-origin rules (pure)
+│               ├── html_parser.py     # link + form extraction (pure)
+│               ├── crawler.py         # bounded BFS, injectable fetcher
+│               └── module.py          # glue: network fetcher -> CrawlResult
 │   └── tests/                         # pytest: headers, cookies, findings API
 │
 └── frontend/
@@ -119,12 +127,13 @@ web-scanner/
         │   ├── auth/                  # login/register forms, AuthGuard
         │   ├── scans/                 # table, badges, result sections, create form
         │   ├── findings/               # findings section, severity badges
+        │   ├── attack-surface/         # endpoints, forms, parameters
         │   ├── dashboard/             # stat card
         │   └── common/                # page header, empty/error states
         ├── hooks/                     # use-auth.tsx, use-async-data.ts
         ├── lib/                       # api-client.ts, errors.ts, format.ts
         ├── services/                  # auth.service.ts, user.service.ts, scan.service.ts
-        └── types/                     # user.ts, scan.ts, finding.ts, api.ts
+        └── types/                     # user, scan, finding, attack-surface, api
 ```
 
 ---
@@ -233,11 +242,21 @@ Always change the schema through a migration; never edit the database by hand.
 
 ```bash
 cd backend
-.venv\Scripts\python -m pytest          # 52 tests
+.venv\Scripts\python -m pytest          # 135 tests
 ```
 
-`tests/test_security_headers.py` and `tests/test_cookies.py` cover the detectors as pure
-functions — no network, no database. `tests/test_findings_api.py` drives the real app through
+| Suite | Covers |
+| ----- | ------ |
+| `test_security_headers.py` | Header rules, as pure functions |
+| `test_cookies.py` | Cookie parsing and rules, including the no-values guarantee |
+| `test_url_normalizer.py` | Normalisation, same-origin scoping, canonical URLs |
+| `test_html_parser.py` | Link and form extraction |
+| `test_crawler.py` | Crawl limits, cycles, redirects, non-HTML, failures |
+| `test_findings_api.py` | Findings API ownership and isolation |
+| `test_attack_surface_api.py` | Endpoint/form API ownership and isolation |
+
+The detector and crawler suites need no network: the crawler's page fetcher is injected, so
+limits, cycles and failure handling are deterministic. The API suites drive the real app through
 FastAPI's `TestClient` against the configured database, registering a fresh user per test and
 cleaning up afterwards.
 
@@ -461,6 +480,124 @@ The goal is a scanner worth trusting, not one that produces a large number of fi
 
 ---
 
+## Attack-surface discovery (Phase 4)
+
+After the probe and the security detectors run, a crawler walks the target origin to map what
+the application exposes: reachable URLs, the query parameters they accept, and the forms on each
+page.
+
+### Architecture
+
+```
+Router -> Scan Service -> Scanner -> HttpScanner -> ResponseAnalyzer
+                                          |
+                                          |-> SecurityAnalysisModule (headers, cookies)
+                                          |
+                                          +-> CrawlModule
+                                                 |-> Crawler          (bounded BFS)
+                                                 |-> url_normalizer   (pure)
+                                                 |-> html_parser      (pure)
+                                                       |
+                                            Endpoints / Parameters / Forms
+                                                       |
+                                          attack_surface_service -> database
+```
+
+The crawler shares `HttpFetcher` with the single-page probe, so crawled pages get identical
+redirect, SSRF-revalidation, timeout and body-size handling from one implementation. Its page
+fetcher is injected, which is what lets the whole algorithm be tested against canned pages with
+no network involved.
+
+`url_normalizer` and `html_parser` are pure functions. Neither holds a session nor imports a
+model.
+
+### Crawl limits
+
+Configurable in `backend/.env`; nothing is hardcoded in the crawler.
+
+| Setting | Default | Purpose |
+| ------- | ------- | ------- |
+| `CRAWLER_ENABLED` | `true` | Turn crawling off entirely |
+| `CRAWLER_MAX_PAGES` | `50` | Hard cap on pages fetched |
+| `CRAWLER_MAX_DEPTH` | `3` | Link hops from the seed URL |
+| `CRAWLER_TIME_BUDGET_SECONDS` | `90` | Wall-clock budget for the whole crawl |
+| `CRAWLER_MAX_REDIRECTS_PER_PAGE` | `3` | Redirects followed per crawled page |
+
+Termination is guaranteed three ways — the page cap, the depth cap and the time budget — and the
+visited set is keyed on the canonical URL, so circular links cannot loop. **Reaching a limit is
+normal completion, not a failure:** the scan is still `COMPLETED`, and `crawl_limit_reached`
+records that it stopped early.
+
+The crawl runs inline in the scan request, so `SCANNER_TOTAL_TIMEOUT_SECONDS` was raised to 150
+and the frontend's axios timeout to 180 s, keeping the server's limit the one that ends a slow
+scan.
+
+### Scope: strictly same-origin
+
+The origin is taken from the probe's **final** URL, so a target that redirects
+`http://example.com` to `https://example.com` is crawled where it actually landed — and the lock
+is taken from there, so no later redirect can widen the scope.
+
+Same-origin means an exact scheme, host and port match. Deliberately strict:
+
+| From `https://example.com` | Crawled? |
+| -------------------------- | -------- |
+| `https://example.com/login` | yes |
+| `http://example.com/` | **no** — a scheme change is an origin change |
+| `https://sub.example.com/` | **no** — a different host |
+| `https://example.com:8443/` | **no** — a different port |
+| `https://google.com/` | **no** |
+
+A redirect that leaves the origin is refused rather than followed, so the crawler cannot be
+walked onto another host by a hostile target.
+
+### URL normalisation
+
+Two forms of every URL matter:
+
+* **fetch form** — what is actually requested, query values intact, because `/search?q=phone`
+  and `/search?q=` return different pages.
+* **canonical form** — what is stored and de-duplicated on, with query *values* stripped and
+  parameter names sorted.
+
+So `/search?q=phone&category=shoes` is fetched as written but stored as `/search?category&q`.
+That gives two things at once: `/search?q=a` and `/search?q=b` count as one endpoint rather than
+crawling every variant, and **no query value is ever written to the database** — a URL carrying
+`?access_token=...` stores only the name `access_token`.
+
+Normalisation also resolves relative links (`/login`, `products`, `../about`), strips fragments,
+lower-cases scheme and host, drops a redundant default port, and supplies a `/` path.
+
+### What is discovered
+
+| Data | Detail |
+| ---- | ------ |
+| Endpoints | URL (canonical), path, method, status code, content type, depth, page title |
+| Parameters | Query parameter **names**, per endpoint. Never values |
+| Forms | Page URL, resolved action, method (GET/POST) |
+| Form fields | Name, kind (input/textarea/select/button) and the `type` attribute. Never values |
+
+Only HTML responses are parsed for links and forms. A JSON or image response is recorded as an
+endpoint and otherwise left alone. Repeated control names — a radio or checkbox group — collapse
+to one field, because that is one input as far as attack surface goes.
+
+### What is never stored
+
+* Query parameter values, including anything token-shaped in a URL.
+* Form field values. A hidden input's `value` is frequently a CSRF token, so it is dropped at
+  parse time; `EndpointParameter` and `FormField` have no `value` column at all.
+* Cookie values (unchanged from Phase 3).
+
+### Safety
+
+* **Only same-origin GET requests.** No form is submitted, no payload is sent, no directory or
+  subdomain is guessed, no port is scanned.
+* Every request reuses the existing SSRF guard, so a link to `127.0.0.1` or `169.254.169.254` is
+  refused like any other target.
+* `robots.txt` is **not** consulted — see limitations.
+
+---
+
 ## API overview
 
 All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
@@ -500,6 +637,8 @@ All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
 | GET    | `/api/scans/stats` | yes | Scan counts by status |
 | GET    | `/api/scans/{scan_id}` | yes | Read one scan |
 | GET    | `/api/scans/{scan_id}/findings` | yes | Security findings for one scan, most severe first |
+| GET    | `/api/scans/{scan_id}/endpoints` | yes | URLs the crawler reached, with parameter names |
+| GET    | `/api/scans/{scan_id}/forms` | yes | Forms found on crawled pages, with their fields |
 | DELETE | `/api/scans/{scan_id}` | yes | Delete one scan |
 
 ### System
@@ -572,9 +711,19 @@ the server and mirrored by Zod in the browser; the server is authoritative.
   carry MEDIUM confidence.
 * **Only cookies set on the scanned response are seen.** Cookies set after login, or by
   JavaScript, are invisible to this scanner.
-* **Header analysis reflects one URL.** Another path on the same site may send different headers.
-* **No crawling.** Only the exact URL submitted is requested. Links, sitemaps and redirect
-  destinations are not followed for discovery.
+* **Header analysis reflects one URL.** Another path on the same site may send different
+  headers. The crawler maps the surface but does not yet re-run the detectors per page.
+* **No JavaScript.** The crawler parses server-returned HTML only. A single-page application
+  that builds its routes at runtime will appear to have almost no attack surface, because no
+  browser engine is used and none is planned for this phase.
+* **No form submission.** Forms are discovered, never submitted, so anything reachable only
+  behind a form — or behind a login — is not crawled.
+* **`robots.txt` is not consulted.** Scope is controlled by the explicit target, the same-origin
+  rule and the crawl limits instead. Only scan sites you are authorised to test.
+* **Same-origin only.** Content on a CDN or an API subdomain is not crawled, even when it is
+  part of the same application.
+* **No path-parameter inference.** `/products/1` and `/products/2` are recorded as two
+  endpoints; the crawler does not generalise them into `/products/{id}`.
 * Scans run **inline in the request**, so creating a scan blocks until the probe finishes
   (bounded by `SCANNER_TOTAL_TIMEOUT_SECONDS`, default 30 s). There is no background worker, so
   `PENDING` and `RUNNING` are transient in practice — they exist so that moving execution to a
@@ -600,12 +749,16 @@ Planned, in order. Everything from Phase 3 onward is unimplemented.
 | ----- | ----- | ----- |
 | 1 | Auth, dashboard, scan management, basic HTTP probe | done |
 | 2 | Response analysis: page title, content type, size, redirect chain | done |
-| 3 | `Finding` model, security-header and cookie analysis | **done - current release** |
-| 4 | Crawler, endpoint discovery, TLS inspection, CORS policy, risk scoring | planned |
-| 5 | Active testing: XSS, SQL injection, open redirect, API security checks | planned |
-| 6 | Reporting and export, background execution for long-running scans | planned |
+| 3 | `Finding` model, security-header and cookie analysis | done |
+| 4 | Crawler, endpoint / parameter / form discovery | **done - current release** |
+| 5 | TLS inspection, CORS policy, per-endpoint header analysis, risk scoring | planned |
+| 6 | Active testing: XSS, SQL injection, open redirect, API security checks | planned |
+| 7 | Reporting and export, background execution for long-running scans | planned |
 
-Each becomes a `ScanModule` behind the protocol already defined in
+The attack surface discovered in Phase 4 is what later detectors will consume: endpoints and
+their parameters are the injection points an XSS or SQL-injection check needs, and forms are
+what a CSRF check examines. Each detector becomes a `ScanModule` behind the protocol already
+defined in
 `backend/app/scanner/types.py`, registered in the `WebScanner` orchestrator. The API and database
 layers do not need to change to accommodate them.
 

@@ -55,6 +55,14 @@ class ScanRead(BaseModel):
     redirect_count: int | None
     page_title: str | None
     content_length: int | None
+
+    # Crawl summary. Null when the crawler did not run, which is distinct from
+    # a crawl that ran and found nothing.
+    pages_crawled: int | None
+    pages_skipped: int | None
+    max_depth_reached: int | None
+    crawl_limit_reached: bool | None
+
     error_message: str | None
 
 

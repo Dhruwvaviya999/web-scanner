@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
 
+from app.scanner.crawler.types import CrawlResult
 from app.scanner.security.types import FindingData
 
 
@@ -25,6 +26,7 @@ class ScanErrorCode(str, Enum):
     TLS_ERROR = "tls_error"
     TIMEOUT = "timeout"
     TOO_MANY_REDIRECTS = "too_many_redirects"
+    EXTERNAL_REDIRECT = "external_redirect"
     UNEXPECTED = "unexpected"
 
 
@@ -105,6 +107,8 @@ class ScanReport:
     raw: "RawHttpResponse | None" = None
     #: Security observations produced by the detector modules.
     findings: list["FindingData"] = field(default_factory=list)
+    #: Attack surface discovered by the crawler, when it ran.
+    crawl: "CrawlResult | None" = None
     error_code: ScanErrorCode | None = None
     error_message: str | None = None
     # Reserved for later phases: discovered endpoints, risk score.

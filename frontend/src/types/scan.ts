@@ -24,6 +24,12 @@ export interface Scan {
   page_title: string | null;
   content_length: number | null;
 
+  /** Crawl summary. Null when the crawler did not run for this scan. */
+  pages_crawled: number | null;
+  pages_skipped: number | null;
+  max_depth_reached: number | null;
+  crawl_limit_reached: boolean | null;
+
   /** Set only when `status === "FAILED"`. */
   error_message: string | null;
 }

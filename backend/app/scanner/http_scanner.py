@@ -1,12 +1,15 @@
 """HTTP transport for a scan.
 
-This module only fetches: it issues the request, follows redirects and reads a
+This module only fetches: it issues requests, follows redirects and reads a
 bounded slice of the body. Deciding what any of it means is the job of
 `response_analyzer`.
 
 Redirects are followed manually rather than by httpx so that every hop is
 re-validated against the SSRF rules — a public URL that redirects to
 `http://169.254.169.254/` must not be followed.
+
+`HttpFetcher` is shared by the single-page probe and the crawler, so both get
+identical redirect, SSRF and body-size behaviour from one implementation.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ import asyncio
 import logging
 import ssl
 import time
+from collections.abc import Callable
 from urllib.parse import urljoin
 
 import httpx
@@ -34,83 +38,107 @@ logger = logging.getLogger(__name__)
 
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
+#: Decides whether a redirect hop may be followed. Used by the crawler to keep a
+#: redirect from carrying it onto another origin. Taking a plain callable avoids
+#: importing the crawler package here, which would be circular.
+UrlPredicate = Callable[[str], bool]
 
-class HttpProbeModule:
-    """Issues one GET request to the target and records the response metadata."""
 
-    name = "http_probe"
+def build_client(config: ScannerConfig) -> httpx.AsyncClient:
+    """An httpx client configured for scanning.
 
-    def __init__(self, config: ScannerConfig) -> None:
-        self._config = config
-
-    async def run(self, target: ScanTarget, report: ScanReport) -> None:
-        raw = await self._fetch(target)
-        # Kept on the report so the security detectors can read the headers and
-        # cookies without a second request to the target.
-        report.raw = raw
-        report.probe = analyze_response(raw)
-
-    async def _fetch(self, target: ScanTarget) -> RawHttpResponse:
-        headers = {
-            "User-Agent": self._config.user_agent,
+    Redirects are disabled at the client level on purpose: this module follows
+    them by hand so each hop can be re-validated.
+    """
+    return httpx.AsyncClient(
+        follow_redirects=False,
+        timeout=httpx.Timeout(config.timeout_seconds),
+        headers={
+            "User-Agent": config.user_agent,
             "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
             "Accept-Encoding": "gzip, deflate",
-        }
+        },
+        verify=True,
+    )
+
+
+class HttpFetcher:
+    """Fetches one URL, following redirects within the configured bounds."""
+
+    def __init__(
+        self,
+        config: ScannerConfig,
+        client: httpx.AsyncClient,
+        *,
+        allow_url: UrlPredicate | None = None,
+        max_redirects: int | None = None,
+    ) -> None:
+        self._config = config
+        self._client = client
+        self._allow_url = allow_url
+        self._max_redirects = (
+            max_redirects if max_redirects is not None else config.max_redirects
+        )
+
+    async def fetch(self, target: ScanTarget, *, read_body: bool = True) -> RawHttpResponse:
         started = time.perf_counter()
+        current = target
+        redirect_count = 0
 
-        async with httpx.AsyncClient(
-            follow_redirects=False,
-            timeout=httpx.Timeout(self._config.timeout_seconds),
-            headers=headers,
-            verify=True,
-        ) as client:
-            current = target
-            redirect_count = 0
+        while True:
+            await self._ensure_allowed(current)
+            response = await self._send(current.normalized_url)
+            try:
+                location = response.headers.get("location")
 
-            while True:
-                await self._ensure_allowed(current)
-                response = await self._send(client, current.normalized_url)
-                try:
-                    location = response.headers.get("location")
+                if response.status_code in _REDIRECT_STATUSES and location:
+                    if redirect_count >= self._max_redirects:
+                        raise ScannerError(
+                            ScanErrorCode.TOO_MANY_REDIRECTS,
+                            f"The target exceeded the redirect limit of {self._max_redirects}.",
+                        )
 
-                    if response.status_code in _REDIRECT_STATUSES and location:
-                        if redirect_count >= self._config.max_redirects:
-                            raise ScannerError(
-                                ScanErrorCode.TOO_MANY_REDIRECTS,
-                                "The target exceeded the redirect limit of "
-                                f"{self._config.max_redirects}.",
-                            )
-                        current = parse_target_url(urljoin(current.normalized_url, location))
-                        redirect_count += 1
-                        continue
+                    next_url = urljoin(current.normalized_url, location)
+                    if self._allow_url is not None and not self._allow_url(next_url):
+                        raise ScannerError(
+                            ScanErrorCode.EXTERNAL_REDIRECT,
+                            "The target redirected outside the origin being scanned.",
+                        )
 
-                    # Timed at headers-received, so a slow body download is not
-                    # counted as the target's response time.
-                    elapsed_ms = int((time.perf_counter() - started) * 1000)
-                    body, truncated = await self._read_body(response)
+                    current = parse_target_url(next_url)
+                    redirect_count += 1
+                    continue
 
-                    return RawHttpResponse(
-                        status_code=response.status_code,
-                        headers=response.headers,
-                        final_url=current.normalized_url,
-                        is_https=current.is_https,
-                        redirect_count=redirect_count,
-                        elapsed_ms=elapsed_ms,
-                        body=body,
-                        body_truncated=truncated,
-                        # get_list keeps each Set-Cookie separate; indexing the
-                        # mapping would join them with commas and corrupt parsing.
-                        set_cookie=tuple(response.headers.get_list("set-cookie")),
-                    )
-                finally:
-                    await response.aclose()
+                # Timed at headers-received, so a slow body download is not
+                # counted as the target's response time.
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                body, truncated = (
+                    await self._read_body(response) if read_body else (b"", False)
+                )
+
+                return RawHttpResponse(
+                    status_code=response.status_code,
+                    headers=response.headers,
+                    final_url=current.normalized_url,
+                    is_https=current.is_https,
+                    redirect_count=redirect_count,
+                    elapsed_ms=elapsed_ms,
+                    body=body,
+                    body_truncated=truncated,
+                    # get_list keeps each Set-Cookie separate; indexing the
+                    # mapping would join them with commas and corrupt parsing.
+                    set_cookie=tuple(response.headers.get_list("set-cookie")),
+                )
+            finally:
+                await response.aclose()
 
     async def _read_body(self, response: httpx.Response) -> tuple[bytes, bool]:
         """Read at most `max_response_bytes` of an HTML body.
 
-        Non-HTML responses are never downloaded — the only reason phase 2 reads a
-        body at all is to recover the page title. A read that fails partway is
-        tolerated: the status and headers already gathered are worth keeping.
+        Non-HTML responses are never downloaded — bodies are only read to
+        recover the page title and, for the crawler, its links and forms. A read
+        that fails partway is tolerated: the status and headers already gathered
+        are worth keeping.
         """
         if not is_html_response(response.headers.get("content-type")):
             return b"", False
@@ -141,11 +169,11 @@ class HttpProbeModule:
             allow_private_networks=self._config.allow_private_networks,
         )
 
-    async def _send(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
+    async def _send(self, url: str) -> httpx.Response:
         """Send a GET and return the response with its body still unread."""
-        request = client.build_request("GET", url)
+        request = self._client.build_request("GET", url)
         try:
-            return await client.send(request, stream=True)
+            return await self._client.send(request, stream=True)
         except httpx.TooManyRedirects as exc:
             raise ScannerError(
                 ScanErrorCode.TOO_MANY_REDIRECTS, "The target redirected too many times."
@@ -168,6 +196,24 @@ class HttpProbeModule:
             raise ScannerError(
                 ScanErrorCode.CONNECTION_FAILED, "The request to the target failed."
             ) from exc
+
+
+class HttpProbeModule:
+    """Issues one GET request to the target and records the response metadata."""
+
+    name = "http_probe"
+
+    def __init__(self, config: ScannerConfig) -> None:
+        self._config = config
+
+    async def run(self, target: ScanTarget, report: ScanReport) -> None:
+        async with build_client(self._config) as client:
+            raw = await HttpFetcher(self._config, client).fetch(target)
+
+        # Kept on the report so the security detectors can read the headers and
+        # cookies without a second request to the target.
+        report.raw = raw
+        report.probe = analyze_response(raw)
 
 
 def _is_tls_error(exc: BaseException) -> bool:

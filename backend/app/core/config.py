@@ -65,7 +65,9 @@ class Settings(BaseSettings):
 
     # --- Scanner ---
     SCANNER_TIMEOUT_SECONDS: float = Field(default=10.0, gt=0)
-    SCANNER_TOTAL_TIMEOUT_SECONDS: float = Field(default=30.0, gt=0)
+    # Covers probe + security analysis + crawl. Raised in phase 4 because
+    # the crawl runs inline in the same request.
+    SCANNER_TOTAL_TIMEOUT_SECONDS: float = Field(default=150.0, gt=0)
     SCANNER_MAX_REDIRECTS: int = Field(default=5, ge=0, le=20)
     # Hard cap on body bytes read from a target. Only HTML bodies are read,
     # and only far enough to recover the page title.
@@ -74,6 +76,15 @@ class Settings(BaseSettings):
     # Scanning private/loopback addresses is an SSRF vector. Only enable this on
     # an isolated network where you intend to scan internal hosts.
     SCANNER_ALLOW_PRIVATE_NETWORKS: bool = False
+
+    # --- Crawler (phase 4) ---
+    CRAWLER_ENABLED: bool = True
+    CRAWLER_MAX_PAGES: int = Field(default=50, gt=0, le=500)
+    CRAWLER_MAX_DEPTH: int = Field(default=3, ge=0, le=10)
+    # Wall-clock budget for the crawl alone; must stay below
+    # SCANNER_TOTAL_TIMEOUT_SECONDS to leave room for the probe.
+    CRAWLER_TIME_BUDGET_SECONDS: float = Field(default=90.0, gt=0)
+    CRAWLER_MAX_REDIRECTS_PER_PAGE: int = Field(default=3, ge=0, le=10)
 
     @field_validator("JWT_SECRET_KEY")
     @classmethod

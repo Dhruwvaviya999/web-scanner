@@ -18,8 +18,10 @@ export const apiClient: AxiosInstance = axios.create({
   // Sends and receives the httpOnly auth cookie. Requires the backend to allow
   // this exact origin with credentials (see CORS_ORIGINS).
   withCredentials: true,
-  // A scan runs inline in the request, so allow for a slow target.
-  timeout: 60_000,
+  // A scan runs inline in the request: probe + security analysis + crawl. This
+  // must exceed the backend's SCANNER_TOTAL_TIMEOUT_SECONDS (150s) so the
+  // server's own limit is what ends a slow scan, not the client giving up.
+  timeout: 180_000,
   headers: { "Content-Type": "application/json" },
 });
 

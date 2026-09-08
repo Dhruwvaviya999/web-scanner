@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from app.scanner.crawler.module import CrawlModule
+from app.scanner.crawler.types import CrawlConfig
 from app.scanner.http_scanner import HttpProbeModule
 from app.scanner.security.module import SecurityAnalysisModule
 from app.scanner.types import (
@@ -27,14 +29,24 @@ logger = logging.getLogger(__name__)
 
 
 class WebScanner:
-    def __init__(self, config: ScannerConfig | None = None, modules: list[ScanModule] | None = None) -> None:
+    def __init__(
+        self,
+        config: ScannerConfig | None = None,
+        modules: list[ScanModule] | None = None,
+        crawl_config: CrawlConfig | None = None,
+    ) -> None:
         self._config = config or ScannerConfig()
+        self._crawl_config = crawl_config or CrawlConfig()
         # Order matters: the probe fetches, then the detectors interpret what it
         # fetched. Later phases append further modules to this list.
         self._modules: list[ScanModule] = (
             modules
             if modules is not None
-            else [HttpProbeModule(self._config), SecurityAnalysisModule()]
+            else [
+                HttpProbeModule(self._config),
+                SecurityAnalysisModule(),
+                CrawlModule(self._config, self._crawl_config),
+            ]
         )
 
     async def scan(self, raw_url: str) -> ScanReport:

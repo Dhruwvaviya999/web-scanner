@@ -29,6 +29,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base, TimestampMixin
 
 if TYPE_CHECKING:
+    from app.models.attack_surface import Endpoint, Form
     from app.models.finding import Finding
     from app.models.user import User
 
@@ -81,11 +82,29 @@ class Scan(Base, TimestampMixin):
     #: Body size in bytes. BigInteger because Content-Length can exceed 2 GiB.
     content_length: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
+    # --- Crawl summary (phase 4) ---
+    # Null when the crawler did not run. `crawl_limit_reached` records normal
+    # early termination on max_pages or the time budget, not a failure.
+    pages_crawled: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pages_skipped: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_depth_reached: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    crawl_limit_reached: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
     # Populated only when `status == FAILED`; safe to show to the scan's owner.
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     user: Mapped["User"] = relationship(back_populates="scans")
     findings: Mapped[list["Finding"]] = relationship(
+        back_populates="scan",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    endpoints: Mapped[list["Endpoint"]] = relationship(
+        back_populates="scan",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    forms: Mapped[list["Form"]] = relationship(
         back_populates="scan",
         cascade="all, delete-orphan",
         passive_deletes=True,

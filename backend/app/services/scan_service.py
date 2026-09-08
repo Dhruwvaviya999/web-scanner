@@ -18,8 +18,8 @@ from app.core.config import settings
 from app.core.errors import NotFoundError
 from app.models.scan import Scan, ScanStatus
 from app.models.user import User
-from app.scanner import ScannerConfig, ScanReport, WebScanner
-from app.services import finding_service
+from app.scanner import CrawlConfig, ScannerConfig, ScanReport, WebScanner
+from app.services import attack_surface_service, finding_service
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,16 @@ def _scanner_config() -> ScannerConfig:
         max_response_bytes=settings.SCANNER_MAX_RESPONSE_BYTES,
         user_agent=settings.SCANNER_USER_AGENT,
         allow_private_networks=settings.SCANNER_ALLOW_PRIVATE_NETWORKS,
+    )
+
+
+def _crawl_config() -> CrawlConfig:
+    return CrawlConfig(
+        enabled=settings.CRAWLER_ENABLED,
+        max_pages=settings.CRAWLER_MAX_PAGES,
+        max_depth=settings.CRAWLER_MAX_DEPTH,
+        time_budget_seconds=settings.CRAWLER_TIME_BUDGET_SECONDS,
+        max_redirects_per_page=settings.CRAWLER_MAX_REDIRECTS_PER_PAGE,
     )
 
 
@@ -55,12 +65,15 @@ def create_scan(db: Session, user: User, target_url: str) -> Scan:
     scan.started_at = datetime.now(UTC)
     db.commit()
 
-    report = WebScanner(_scanner_config()).scan_sync(target_url)
+    report = WebScanner(_scanner_config(), crawl_config=_crawl_config()).scan_sync(
+        target_url
+    )
     _apply_report(scan, report)
 
     # Findings are written in the same transaction as the scan result, so a
     # scan is never left COMPLETED with its findings missing.
     finding_service.replace_findings(db, scan, report.findings)
+    attack_surface_service.replace_attack_surface(db, scan, report.crawl)
 
     scan.completed_at = datetime.now(UTC)
     db.commit()

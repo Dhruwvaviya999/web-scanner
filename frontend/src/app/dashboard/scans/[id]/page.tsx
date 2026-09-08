@@ -8,6 +8,7 @@ import { ButtonLink } from "@/components/common/button-link";
 import { ErrorAlert } from "@/components/common/error-alert";
 import { FullPageLoader } from "@/components/common/full-page-loader";
 import { PageHeader } from "@/components/common/page-header";
+import { AttackSurfaceSection } from "@/components/attack-surface/attack-surface-section";
 import { FindingsSection } from "@/components/findings/findings-section";
 import { DeleteScanDialog } from "@/components/scans/delete-scan-dialog";
 import { ScanStatusBadge } from "@/components/scans/scan-status-badge";
@@ -35,6 +36,16 @@ export default function ScanDetailPage({ params }: PageProps<"/dashboard/scans/[
     loading: findingsLoading,
     error: findingsError,
   } = useAsyncData(fetchFindings);
+
+  const fetchEndpoints = useCallback(() => scanService.endpoints(id), [id]);
+  const {
+    data: endpoints,
+    loading: endpointsLoading,
+    error: endpointsError,
+  } = useAsyncData(fetchEndpoints);
+
+  const fetchForms = useCallback(() => scanService.forms(id), [id]);
+  const { data: forms, loading: formsLoading, error: formsError } = useAsyncData(fetchForms);
 
   if (loading) return <FullPageLoader label="Loading scan…" />;
 
@@ -118,15 +129,24 @@ export default function ScanDetailPage({ params }: PageProps<"/dashboard/scans/[
         scanFailed={failed}
       />
 
+      <AttackSurfaceSection
+        endpoints={endpoints}
+        forms={forms}
+        loading={endpointsLoading || formsLoading}
+        error={endpointsError ?? formsError}
+        scanFailed={failed}
+      />
+
       <Card className="border-dashed">
         <CardContent className="space-y-2 text-sm">
           <p className="font-medium">Scope of this result</p>
           <p className="text-muted-foreground">
-            This scan performed a single HTTP GET against the target, recorded what came back,
-            and checked the response&apos;s security headers and cookies. No vulnerability testing
-            was performed — no payloads were sent, and no crawling, TLS, injection or CORS
-            analysis was run. Findings are configuration observations, not confirmed
-            vulnerabilities, and their absence does not mean the site is secure.
+            This scan fetched the target, recorded the response,
+            checked the response&apos;s security headers and cookies, then crawled the origin to
+            map its attack surface. No vulnerability testing was performed — no payloads were
+            sent, no forms were submitted, and no TLS, injection or CORS analysis was run.
+            Findings are configuration observations, not confirmed vulnerabilities, and their
+            absence does not mean the site is secure.
           </p>
           <p className="pt-1 font-mono text-xs text-muted-foreground">Scan ID: {scan.id}</p>
         </CardContent>

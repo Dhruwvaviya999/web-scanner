@@ -14,10 +14,17 @@ from fastapi import APIRouter, Query, Response, status
 
 from app.core.deps import CurrentUser, DbSession
 from app.models.scan import ScanStatus
+from app.schemas.attack_surface import (
+    AttackSurfaceSummary,
+    EndpointListResponse,
+    EndpointRead,
+    FormListResponse,
+    FormRead,
+)
 from app.schemas.common import NOT_FOUND_RESPONSE, UNAUTHORIZED_RESPONSE
 from app.schemas.finding import FindingListResponse, FindingRead, FindingSummary
 from app.schemas.scan import ScanCreate, ScanListResponse, ScanRead, ScanStats
-from app.services import finding_service, scan_service
+from app.services import attack_surface_service, finding_service, scan_service
 
 router = APIRouter(prefix="/scans", tags=["scans"], responses=UNAUTHORIZED_RESPONSE)
 
@@ -96,6 +103,47 @@ def read_scan_findings(
     return FindingListResponse(
         items=[FindingRead.model_validate(f) for f in findings],
         summary=FindingSummary(**finding_service.summarize(findings)),
+    )
+
+
+@router.get(
+    "/{scan_id}/endpoints",
+    response_model=EndpointListResponse,
+    summary="Endpoints discovered by the crawler",
+    responses=NOT_FOUND_RESPONSE,
+)
+def read_scan_endpoints(
+    scan_id: uuid.UUID, current_user: CurrentUser, db: DbSession
+) -> EndpointListResponse:
+    """URLs the crawler reached, with their query parameter names.
+
+    Stored URLs are canonical: parameter names are kept and their values
+    removed, so nothing sensitive from a query string is exposed here.
+    """
+    endpoints = attack_surface_service.list_endpoints(db, current_user, scan_id)
+    scan = scan_service.get_scan(db, current_user, scan_id)
+    return EndpointListResponse(
+        items=[EndpointRead.model_validate(e) for e in endpoints],
+        summary=AttackSurfaceSummary(**attack_surface_service.summarize(db, scan)),
+    )
+
+
+@router.get(
+    "/{scan_id}/forms",
+    response_model=FormListResponse,
+    summary="Forms discovered by the crawler",
+    responses=NOT_FOUND_RESPONSE,
+)
+def read_scan_forms(
+    scan_id: uuid.UUID, current_user: CurrentUser, db: DbSession
+) -> FormListResponse:
+    """Forms found on crawled pages, with their field names and types.
+
+    Discovery only — no form was ever submitted, and no field value is stored.
+    """
+    forms = attack_surface_service.list_forms(db, current_user, scan_id)
+    return FormListResponse(
+        items=[FormRead.model_validate(f) for f in forms], total=len(forms)
     )
 
 

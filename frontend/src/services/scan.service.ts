@@ -1,4 +1,8 @@
 import { apiClient } from "@/lib/api-client";
+import type {
+  EndpointListResponse,
+  FormListResponse,
+} from "@/types/attack-surface";
 import type { FindingListResponse } from "@/types/finding";
 import type {
   CreateScanPayload,
@@ -33,6 +37,18 @@ export const scanService = {
   /** Security findings for one scan, most severe first. */
   async findings(id: string): Promise<FindingListResponse> {
     const { data } = await apiClient.get<FindingListResponse>(`/scans/${id}/findings`);
+    return data;
+  },
+
+  /** URLs the crawler reached, with their query parameter names. */
+  async endpoints(id: string): Promise<EndpointListResponse> {
+    const { data } = await apiClient.get<EndpointListResponse>(`/scans/${id}/endpoints`);
+    return data;
+  },
+
+  /** Forms found on crawled pages. Discovery only — none were submitted. */
+  async forms(id: string): Promise<FormListResponse> {
+    const { data } = await apiClient.get<FormListResponse>(`/scans/${id}/forms`);
     return data;
   },
 

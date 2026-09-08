@@ -6,6 +6,15 @@ what allows it to grow into a full crawling/analysis pipeline independently of
 the web application around it.
 """
 
+from app.scanner.crawler.types import (
+    CrawlConfig,
+    CrawlResult,
+    DiscoveredEndpoint,
+    DiscoveredForm,
+    DiscoveredFormField,
+    FormFieldKind,
+    ParameterLocation,
+)
 from app.scanner.response_analyzer import analyze_response, extract_page_title
 from app.scanner.security.types import (
     FindingCategory,
@@ -26,11 +35,18 @@ from app.scanner.types import (
 from app.scanner.url_validator import parse_target_url
 
 __all__ = [
+    "CrawlConfig",
+    "CrawlResult",
+    "DiscoveredEndpoint",
+    "DiscoveredForm",
+    "DiscoveredFormField",
     "FindingCategory",
     "FindingConfidence",
     "FindingData",
     "FindingSeverity",
+    "FormFieldKind",
     "HttpProbeResult",
+    "ParameterLocation",
     "RawHttpResponse",
     "ScanErrorCode",
     "ScanReport",
