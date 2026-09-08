@@ -67,7 +67,9 @@ class Settings(BaseSettings):
     SCANNER_TIMEOUT_SECONDS: float = Field(default=10.0, gt=0)
     SCANNER_TOTAL_TIMEOUT_SECONDS: float = Field(default=30.0, gt=0)
     SCANNER_MAX_REDIRECTS: int = Field(default=5, ge=0, le=20)
-    SCANNER_MAX_RESPONSE_BYTES: int = Field(default=2_000_000, gt=0)
+    # Hard cap on body bytes read from a target. Only HTML bodies are read,
+    # and only far enough to recover the page title.
+    SCANNER_MAX_RESPONSE_BYTES: int = Field(default=262_144, gt=0)
     SCANNER_USER_AGENT: str = "WebScanner/0.1 (+https://github.com/local/web-scanner)"
     # Scanning private/loopback addresses is an SSRF vector. Only enable this on
     # an isolated network where you intend to scan internal hosts.

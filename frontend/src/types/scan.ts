@@ -20,6 +20,10 @@ export interface Scan {
   is_https: boolean | null;
   redirect_count: number | null;
 
+  /** Response analysis. Null when the target returned no HTML title / size. */
+  page_title: string | null;
+  content_length: number | null;
+
   /** Set only when `status === "FAILED"`. */
   error_message: string | null;
 }

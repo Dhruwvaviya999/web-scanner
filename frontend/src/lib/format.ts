@@ -31,3 +31,56 @@ export function primaryContentType(value: string | null | undefined): string {
   if (!value) return "—";
   return value.split(";")[0].trim() || "—";
 }
+
+/** Human-readable byte size, e.g. `559 B`, `12.4 KB`. */
+export function formatBytes(bytes: number | null | undefined): string {
+  if (bytes === null || bytes === undefined || bytes < 0) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(value < 10 ? 1 : 0)} ${units[unit]}`;
+}
+
+/** Standard reason phrase for the status codes a basic probe encounters. */
+const STATUS_TEXT: Record<number, string> = {
+  200: "OK",
+  201: "Created",
+  204: "No Content",
+  301: "Moved Permanently",
+  302: "Found",
+  304: "Not Modified",
+  307: "Temporary Redirect",
+  308: "Permanent Redirect",
+  400: "Bad Request",
+  401: "Unauthorized",
+  403: "Forbidden",
+  404: "Not Found",
+  405: "Method Not Allowed",
+  410: "Gone",
+  429: "Too Many Requests",
+  500: "Internal Server Error",
+  502: "Bad Gateway",
+  503: "Service Unavailable",
+  504: "Gateway Timeout",
+};
+
+export function statusCodeText(code: number | null | undefined): string | null {
+  return code ? (STATUS_TEXT[code] ?? null) : null;
+}
+
+/** Which family a status code belongs to, for colouring. */
+export type StatusFamily = "success" | "redirect" | "client-error" | "server-error" | "unknown";
+
+export function statusFamily(code: number | null | undefined): StatusFamily {
+  if (!code) return "unknown";
+  if (code >= 200 && code < 300) return "success";
+  if (code >= 300 && code < 400) return "redirect";
+  if (code >= 400 && code < 500) return "client-error";
+  if (code >= 500) return "server-error";
+  return "unknown";
+}

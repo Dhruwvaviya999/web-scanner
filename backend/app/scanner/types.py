@@ -7,6 +7,7 @@ layer between this package and the rest of the application.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
@@ -47,8 +48,29 @@ class ScanTarget:
 
 
 @dataclass(frozen=True, slots=True)
+class RawHttpResponse:
+    """Transport-level facts about the final response, before interpretation.
+
+    `http_scanner` produces this; `response_analyzer` turns it into an
+    `HttpProbeResult`. Keeping the two apart means fetching and interpreting can
+    change independently, and the analyzer is testable without a network.
+    """
+
+    status_code: int
+    headers: Mapping[str, str]
+    final_url: str
+    is_https: bool
+    redirect_count: int
+    elapsed_ms: int
+    #: Bounded prefix of the body. Empty when the body was not worth reading.
+    body: bytes = b""
+    #: True when the body was longer than the scanner's read limit.
+    body_truncated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class HttpProbeResult:
-    """What a single HTTP request to the target revealed."""
+    """The analysed result of a single HTTP request to the target."""
 
     http_status_code: int
     response_time_ms: int
@@ -57,6 +79,10 @@ class HttpProbeResult:
     redirect_count: int
     content_type: str | None = None
     server_header: str | None = None
+    #: <title> of the page, when the response was HTML and carried one.
+    page_title: str | None = None
+    #: Size of the response body in bytes, when the target reported or we read it.
+    content_length: int | None = None
 
 
 @dataclass(slots=True)
@@ -90,7 +116,9 @@ class ScannerConfig:
     timeout_seconds: float = 10.0
     total_timeout_seconds: float = 30.0
     max_redirects: int = 5
-    max_response_bytes: int = 2_000_000
+    #: Hard cap on body bytes read from a target. Only HTML bodies are read at
+    #: all, and only to recover the page title.
+    max_response_bytes: int = 262_144
     user_agent: str = "WebScanner/0.1"
     allow_private_networks: bool = False
 

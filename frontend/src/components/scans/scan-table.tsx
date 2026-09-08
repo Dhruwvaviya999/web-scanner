@@ -4,6 +4,7 @@ import Link from "next/link";
 import { ArrowUpRight } from "lucide-react";
 
 import { DeleteScanDialog } from "@/components/scans/delete-scan-dialog";
+import { HttpStatusBadge } from "@/components/scans/http-status-badge";
 import { ScanStatusBadge } from "@/components/scans/scan-status-badge";
 import { ButtonLink } from "@/components/common/button-link";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -34,7 +35,7 @@ export function ScanTable({ scans, loading = false, onChanged, compact = false }
           <TableRow className="hover:bg-transparent">
             <TableHead className="min-w-64">Target</TableHead>
             <TableHead className="w-32">Status</TableHead>
-            <TableHead className="w-24">HTTP</TableHead>
+            <TableHead className="w-36">HTTP</TableHead>
             <TableHead className="w-28">Time</TableHead>
             <TableHead className="w-44">Created</TableHead>
             {!compact && <TableHead className="w-36">Scan ID</TableHead>}
@@ -52,20 +53,28 @@ export function ScanTable({ scans, loading = false, onChanged, compact = false }
               ))
             : scans.map((scan) => (
                 <TableRow key={scan.id}>
-                  <TableCell className="font-mono text-sm">
+                  <TableCell className="text-sm">
                     <Link
                       href={`/dashboard/scans/${scan.id}`}
-                      className="hover:text-primary hover:underline"
+                      className="font-mono hover:text-primary hover:underline"
                       title={scan.target_url}
                     >
                       {truncateUrl(scan.target_url, 52)}
                     </Link>
+                    {scan.page_title ? (
+                      <span
+                        className="mt-0.5 block truncate text-xs text-muted-foreground"
+                        title={scan.page_title}
+                      >
+                        {scan.page_title}
+                      </span>
+                    ) : null}
                   </TableCell>
                   <TableCell>
                     <ScanStatusBadge status={scan.status} />
                   </TableCell>
-                  <TableCell className="font-mono text-sm">
-                    {scan.http_status_code ?? "—"}
+                  <TableCell>
+                    <HttpStatusBadge code={scan.http_status_code} />
                   </TableCell>
                   <TableCell className="font-mono text-sm text-muted-foreground">
                     {formatDuration(scan.response_time_ms)}

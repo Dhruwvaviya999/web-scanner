@@ -1,4 +1,8 @@
-"""The single HTTP probe that makes up a phase-1 scan.
+"""HTTP transport for a scan.
+
+This module only fetches: it issues the request, follows redirects and reads a
+bounded slice of the body. Deciding what any of it means is the job of
+`response_analyzer`.
 
 Redirects are followed manually rather than by httpx so that every hop is
 re-validated against the SSRF rules — a public URL that redirects to
@@ -8,14 +12,16 @@ re-validated against the SSRF rules — a public URL that redirects to
 from __future__ import annotations
 
 import asyncio
+import logging
 import ssl
 import time
 from urllib.parse import urljoin
 
 import httpx
 
+from app.scanner.response_analyzer import analyze_response, is_html_response
 from app.scanner.types import (
-    HttpProbeResult,
+    RawHttpResponse,
     ScanErrorCode,
     ScannerConfig,
     ScannerError,
@@ -24,8 +30,9 @@ from app.scanner.types import (
 )
 from app.scanner.url_validator import assert_target_allowed, parse_target_url
 
+logger = logging.getLogger(__name__)
+
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
-_MAX_HEADER_VALUE_LENGTH = 255
 
 
 class HttpProbeModule:
@@ -37,20 +44,20 @@ class HttpProbeModule:
         self._config = config
 
     async def run(self, target: ScanTarget, report: ScanReport) -> None:
-        report.probe = await self._probe(target)
+        raw = await self._fetch(target)
+        report.probe = analyze_response(raw)
 
-    async def _probe(self, target: ScanTarget) -> HttpProbeResult:
+    async def _fetch(self, target: ScanTarget) -> RawHttpResponse:
         headers = {
             "User-Agent": self._config.user_agent,
-            "Accept": "*/*",
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
             "Accept-Encoding": "gzip, deflate",
         }
-        timeout = httpx.Timeout(self._config.timeout_seconds)
         started = time.perf_counter()
 
         async with httpx.AsyncClient(
             follow_redirects=False,
-            timeout=timeout,
+            timeout=httpx.Timeout(self._config.timeout_seconds),
             headers=headers,
             verify=True,
         ) as client:
@@ -62,31 +69,62 @@ class HttpProbeModule:
                 response = await self._send(client, current.normalized_url)
                 try:
                     location = response.headers.get("location")
-                    is_redirect = response.status_code in _REDIRECT_STATUSES and location
 
-                    if not is_redirect:
-                        elapsed_ms = int((time.perf_counter() - started) * 1000)
-                        return HttpProbeResult(
-                            http_status_code=response.status_code,
-                            response_time_ms=elapsed_ms,
-                            final_url=current.normalized_url,
-                            is_https=current.is_https,
-                            redirect_count=redirect_count,
-                            content_type=_clean_header(response.headers.get("content-type")),
-                            server_header=_clean_header(response.headers.get("server")),
-                        )
+                    if response.status_code in _REDIRECT_STATUSES and location:
+                        if redirect_count >= self._config.max_redirects:
+                            raise ScannerError(
+                                ScanErrorCode.TOO_MANY_REDIRECTS,
+                                "The target exceeded the redirect limit of "
+                                f"{self._config.max_redirects}.",
+                            )
+                        current = parse_target_url(urljoin(current.normalized_url, location))
+                        redirect_count += 1
+                        continue
 
-                    if redirect_count >= self._config.max_redirects:
-                        raise ScannerError(
-                            ScanErrorCode.TOO_MANY_REDIRECTS,
-                            f"The target exceeded the redirect limit of {self._config.max_redirects}.",
-                        )
+                    # Timed at headers-received, so a slow body download is not
+                    # counted as the target's response time.
+                    elapsed_ms = int((time.perf_counter() - started) * 1000)
+                    body, truncated = await self._read_body(response)
 
-                    next_url = urljoin(current.normalized_url, location)
-                    current = parse_target_url(next_url)
-                    redirect_count += 1
+                    return RawHttpResponse(
+                        status_code=response.status_code,
+                        headers=response.headers,
+                        final_url=current.normalized_url,
+                        is_https=current.is_https,
+                        redirect_count=redirect_count,
+                        elapsed_ms=elapsed_ms,
+                        body=body,
+                        body_truncated=truncated,
+                    )
                 finally:
                     await response.aclose()
+
+    async def _read_body(self, response: httpx.Response) -> tuple[bytes, bool]:
+        """Read at most `max_response_bytes` of an HTML body.
+
+        Non-HTML responses are never downloaded — the only reason phase 2 reads a
+        body at all is to recover the page title. A read that fails partway is
+        tolerated: the status and headers already gathered are worth keeping.
+        """
+        if not is_html_response(response.headers.get("content-type")):
+            return b"", False
+
+        limit = self._config.max_response_bytes
+        chunks: list[bytes] = []
+        size = 0
+        truncated = False
+
+        try:
+            async for chunk in response.aiter_bytes():
+                chunks.append(chunk)
+                size += len(chunk)
+                if size >= limit:
+                    truncated = True
+                    break
+        except httpx.HTTPError as exc:
+            logger.info("Body read interrupted for %s: %s", response.url, type(exc).__name__)
+
+        return b"".join(chunks)[:limit], truncated
 
     async def _ensure_allowed(self, target: ScanTarget) -> None:
         """Run the blocking DNS/SSRF check without stalling the event loop."""
@@ -98,16 +136,14 @@ class HttpProbeModule:
         )
 
     async def _send(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
-        """Send a GET and return the response with its body still unread.
-
-        Streaming means we pay for headers only; a multi-gigabyte target body is
-        never pulled into memory.
-        """
+        """Send a GET and return the response with its body still unread."""
         request = client.build_request("GET", url)
         try:
             return await client.send(request, stream=True)
         except httpx.TooManyRedirects as exc:
-            raise ScannerError(ScanErrorCode.TOO_MANY_REDIRECTS, "The target redirected too many times.") from exc
+            raise ScannerError(
+                ScanErrorCode.TOO_MANY_REDIRECTS, "The target redirected too many times."
+            ) from exc
         except httpx.TimeoutException as exc:
             raise ScannerError(
                 ScanErrorCode.TIMEOUT,
@@ -119,25 +155,19 @@ class HttpProbeModule:
                     ScanErrorCode.TLS_ERROR,
                     "The target's TLS certificate could not be verified.",
                 ) from exc
-            raise ScannerError(ScanErrorCode.CONNECTION_FAILED, "Could not connect to the target.") from exc
+            raise ScannerError(
+                ScanErrorCode.CONNECTION_FAILED, "Could not connect to the target."
+            ) from exc
         except httpx.HTTPError as exc:
-            raise ScannerError(ScanErrorCode.CONNECTION_FAILED, "The request to the target failed.") from exc
+            raise ScannerError(
+                ScanErrorCode.CONNECTION_FAILED, "The request to the target failed."
+            ) from exc
 
 
 def _is_tls_error(exc: BaseException) -> bool:
-    seen = exc
+    seen: BaseException | None = exc
     while seen is not None:
         if isinstance(seen, ssl.SSLError):
             return True
         seen = seen.__cause__ or seen.__context__
     return False
-
-
-def _clean_header(value: str | None) -> str | None:
-    """Trim a response header to something safe to store and display."""
-    if not value:
-        return None
-    collapsed = " ".join(value.split())
-    if not collapsed:
-        return None
-    return collapsed[:_MAX_HEADER_VALUE_LENGTH]

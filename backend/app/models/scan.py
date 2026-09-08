@@ -12,7 +12,17 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -54,7 +64,8 @@ class Scan(Base, TimestampMixin):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    # --- Basic HTTP probe result (phase 1) ---
+    # --- Basic HTTP probe result ---
+    # All nullable: a scan that failed, or has not run yet, has none of them.
     http_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     response_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     final_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
@@ -62,6 +73,12 @@ class Scan(Base, TimestampMixin):
     server_header: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_https: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     redirect_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # --- Response analysis (phase 2) ---
+    #: <title> of the target page, when it returned HTML carrying one.
+    page_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    #: Body size in bytes. BigInteger because Content-Length can exceed 2 GiB.
+    content_length: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     # Populated only when `status == FAILED`; safe to show to the scan's owner.
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

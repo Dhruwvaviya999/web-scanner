@@ -75,6 +75,8 @@ def _apply_report(scan: Scan, report: ScanReport) -> None:
         scan.server_header = probe.server_header
         scan.is_https = probe.is_https
         scan.redirect_count = probe.redirect_count
+        scan.page_title = probe.page_title
+        scan.content_length = probe.content_length
         scan.error_message = None
         return
 

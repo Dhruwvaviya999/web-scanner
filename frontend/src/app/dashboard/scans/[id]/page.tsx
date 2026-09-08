@@ -1,30 +1,25 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { ArrowLeft, ExternalLink, Lock, ShieldOff, Trash2 } from "lucide-react";
+import { ArrowLeft, Trash2 } from "lucide-react";
 import { use, useCallback } from "react";
 
+import { ButtonLink } from "@/components/common/button-link";
 import { ErrorAlert } from "@/components/common/error-alert";
 import { FullPageLoader } from "@/components/common/full-page-loader";
-import { ButtonLink } from "@/components/common/button-link";
 import { PageHeader } from "@/components/common/page-header";
 import { DeleteScanDialog } from "@/components/scans/delete-scan-dialog";
 import { ScanStatusBadge } from "@/components/scans/scan-status-badge";
+import {
+  HttpInformation,
+  PageInformation,
+  TargetInformation,
+} from "@/components/scans/scan-result-sections";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
 import { useAsyncData } from "@/hooks/use-async-data";
-import { formatDateTime, formatDuration, primaryContentType } from "@/lib/format";
+import { formatDateTime } from "@/lib/format";
 import { scanService } from "@/services/scan.service";
-
-function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="grid gap-1 py-3 sm:grid-cols-[13rem_1fr] sm:gap-4">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 text-sm break-words">{children}</dd>
-    </div>
-  );
-}
 
 export default function ScanDetailPage({ params }: PageProps<"/dashboard/scans/[id]">) {
   const { id } = use(params);
@@ -38,7 +33,7 @@ export default function ScanDetailPage({ params }: PageProps<"/dashboard/scans/[
   if (error || !scan) {
     return (
       <>
-        <ButtonLink variant="ghost" size="sm" href="/dashboard/scans">
+        <ButtonLink variant="ghost" size="sm" className="-ml-2 w-fit" href="/dashboard/scans">
           <ArrowLeft className="size-4" aria-hidden />
           Back to scans
         </ButtonLink>
@@ -47,7 +42,7 @@ export default function ScanDetailPage({ params }: PageProps<"/dashboard/scans/[
     );
   }
 
-  const completed = scan.status === "COMPLETED";
+  const failed = scan.status === "FAILED";
 
   return (
     <>
@@ -57,7 +52,7 @@ export default function ScanDetailPage({ params }: PageProps<"/dashboard/scans/[
       </ButtonLink>
 
       <PageHeader
-        title="Scan detail"
+        title="Scan result"
         description={`Recorded ${formatDateTime(scan.created_at)}`}
         actions={
           <DeleteScanDialog
@@ -73,102 +68,51 @@ export default function ScanDetailPage({ params }: PageProps<"/dashboard/scans/[
         }
       />
 
-      {scan.status === "FAILED" && scan.error_message ? (
-        <ErrorAlert title="This scan failed" message={scan.error_message} />
-      ) : null}
-
+      {/* --- Scan Status --- */}
       <Card>
         <CardHeader>
-          <CardTitle>Result</CardTitle>
+          <CardTitle className="text-base">Scan Status</CardTitle>
         </CardHeader>
-        <CardContent>
-          <dl className="divide-y divide-border">
-            <DetailRow label="Target">
-              <span className="font-mono">{scan.target_url}</span>
-            </DetailRow>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+            <ScanStatusBadge status={scan.status} />
+            <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted-foreground">
+              <span>
+                Started <span className="text-foreground">{formatDateTime(scan.started_at)}</span>
+              </span>
+              <span>
+                Finished{" "}
+                <span className="text-foreground">{formatDateTime(scan.completed_at)}</span>
+              </span>
+            </div>
+          </div>
 
-            <DetailRow label="Status">
-              <ScanStatusBadge status={scan.status} />
-            </DetailRow>
-
-            <DetailRow label="HTTP status">
-              <span className="font-mono">{scan.http_status_code ?? "—"}</span>
-            </DetailRow>
-
-            <DetailRow label="Response time">
-              <span className="font-mono">{formatDuration(scan.response_time_ms)}</span>
-            </DetailRow>
-
-            <DetailRow label="Final URL">
-              {scan.final_url ? (
-                <a
-                  href={scan.final_url}
-                  target="_blank"
-                  rel="noopener noreferrer nofollow"
-                  className="inline-flex items-center gap-1.5 font-mono text-primary hover:underline"
-                >
-                  {scan.final_url}
-                  <ExternalLink className="size-3.5 shrink-0" aria-hidden />
-                </a>
-              ) : (
-                "—"
-              )}
-            </DetailRow>
-
-            <DetailRow label="Redirects followed">
-              <span className="font-mono">{scan.redirect_count ?? "—"}</span>
-            </DetailRow>
-
-            <DetailRow label="HTTPS">
-              {scan.is_https === null ? (
-                "—"
-              ) : scan.is_https ? (
-                <span className="inline-flex items-center gap-1.5 text-success">
-                  <Lock className="size-4" aria-hidden />
-                  Enabled
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1.5 text-warning">
-                  <ShieldOff className="size-4" aria-hidden />
-                  Disabled
-                </span>
-              )}
-            </DetailRow>
-
-            <DetailRow label="Content type">
-              <span className="font-mono">{primaryContentType(scan.content_type)}</span>
-            </DetailRow>
-
-            <DetailRow label="Server">
-              <span className="font-mono">{scan.server_header ?? "—"}</span>
-            </DetailRow>
-          </dl>
+          {failed && scan.error_message ? (
+            <ErrorAlert title="This scan failed" message={scan.error_message} />
+          ) : null}
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Metadata</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <dl className="divide-y divide-border">
-            <DetailRow label="Scan ID">
-              <span className="font-mono text-xs">{scan.id}</span>
-            </DetailRow>
-            <DetailRow label="Created">{formatDateTime(scan.created_at)}</DetailRow>
-            <DetailRow label="Started">{formatDateTime(scan.started_at)}</DetailRow>
-            <DetailRow label="Completed">{formatDateTime(scan.completed_at)}</DetailRow>
-          </dl>
+      {/* A failed scan reached no response, so the result sections would be
+          nothing but em dashes. Showing the reason alone is more honest. */}
+      {failed ? null : (
+        <>
+          <TargetInformation scan={scan} />
+          <HttpInformation scan={scan} />
+          <PageInformation scan={scan} />
+        </>
+      )}
 
-          {completed ? (
-            <>
-              <Separator className="my-4" />
-              <p className="text-xs text-muted-foreground">
-                This release records only what a single HTTP request observed. No vulnerability
-                analysis has been performed on this target.
-              </p>
-            </>
-          ) : null}
+      <Card className="border-dashed">
+        <CardContent className="space-y-2 text-sm">
+          <p className="font-medium">Scope of this result</p>
+          <p className="text-muted-foreground">
+            This scan performed a single HTTP GET against the target and recorded what came back.
+            No vulnerability detection has been run — security-header, cookie, TLS, injection and
+            CORS analysis arrive in later phases. Nothing above should be read as a security
+            verdict.
+          </p>
+          <p className="pt-1 font-mono text-xs text-muted-foreground">Scan ID: {scan.id}</p>
         </CardContent>
       </Card>
     </>

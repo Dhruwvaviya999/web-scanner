@@ -2,10 +2,13 @@
 
 A web application for running and tracking HTTP reconnaissance scans against sites you own.
 
-**This is the Phase 1 foundation release.** It provides authentication, scan management and a
-single basic HTTP probe. It performs **no vulnerability detection** — no crawling, no header or
-cookie analysis, no XSS or SQL-injection testing, no risk scoring. Nothing in the UI shows a
-finding that was not directly measured by an HTTP request.
+**This is the Phase 2 release: a basic HTTP website scanner.** It provides authentication, scan
+management, and a single bounded HTTP request per scan whose response is analysed and stored.
+
+It performs **no vulnerability detection.** There is no crawling, no security-header or cookie
+analysis, no TLS posture assessment, no XSS or SQL-injection testing, no CORS checks and no risk
+scoring. Nothing in the UI is a security verdict — every value shown was directly measured from
+one HTTP response.
 
 ---
 
@@ -63,7 +66,8 @@ web-scanner/
 │   ├── alembic/
 │   │   ├── env.py                     # reads DATABASE_URL from app settings
 │   │   └── versions/
-│   │       └── 0001_initial_schema.py
+│   │       ├── 0001_initial_schema.py
+│   │       └── 0002_scan_response_analysis.py
 │   └── app/
 │       ├── main.py                    # app wiring, CORS, exception handlers
 │       ├── core/
@@ -80,7 +84,8 @@ web-scanner/
 │       └── scanner/                   # isolated engine
 │           ├── types.py               # dataclasses + ScanModule protocol
 │           ├── url_validator.py       # parsing + SSRF protection
-│           ├── http_scanner.py        # the single HTTP probe module
+│           ├── http_scanner.py        # transport: request, redirects, bounded read
+│           ├── response_analyzer.py   # interpretation: title, type, size (pure)
 │           └── scanner.py             # orchestrator
 │
 └── frontend/
@@ -101,7 +106,7 @@ web-scanner/
         │   ├── ui/                    # shadcn/ui primitives
         │   ├── layout/                # sidebar, header, user menu, mobile nav
         │   ├── auth/                  # login/register forms, AuthGuard
-        │   ├── scans/                 # table, status badge, create form, delete dialog
+        │   ├── scans/                 # table, badges, result sections, create form
         │   ├── dashboard/             # stat card
         │   └── common/                # page header, empty/error states
         ├── hooks/                     # use-auth.tsx, use-async-data.ts
@@ -242,6 +247,93 @@ Three processes, started in this order:
 
 ---
 
+## What the scanner does (Phase 2)
+
+Each scan issues **one HTTP GET to the exact URL supplied** — the site is not crawled and no
+paths are guessed.
+
+### Pipeline
+
+```
+Router   (app/routers/scans.py)             auth, ownership, request shape
+  |
+Service  (app/services/scan_service.py)     PENDING -> RUNNING -> COMPLETED / FAILED, persistence
+  |
+Scanner  (app/scanner/scanner.py)           orchestrates modules, applies the total timeout
+  |
+HTTP     (app/scanner/http_scanner.py)      connects, follows redirects, reads a bounded body
+  |
+Analyzer (app/scanner/response_analyzer.py) interprets the response - pure, no I/O
+```
+
+`http_scanner` produces a `RawHttpResponse` (status, headers, timing, body prefix);
+`response_analyzer` turns it into an `HttpProbeResult`. Splitting fetching from interpretation
+keeps the analyzer testable without a network, and lets either side change independently.
+
+### What is collected
+
+| Field | Source |
+| ----- | ------ |
+| `http_status_code` | Status of the final response |
+| `final_url` | URL after following redirects |
+| `response_time_ms` | Measured to headers-received, across the whole redirect chain |
+| `content_type` | `Content-Type` header, whitespace-normalised, capped at 255 chars |
+| `server_header` | `Server` header when the target discloses one, else `null` |
+| `page_title` | `<title>`, only when the response is HTML |
+| `redirect_count` | Number of hops followed |
+| `content_length` | `Content-Length`, else bytes read when the body was read in full |
+| `is_https` | Scheme of the final URL |
+| `error_message` | Set only when the scan is `FAILED` |
+
+### Example
+
+`POST /api/scans` with `{"target_url": "https://example.com"}` returns:
+
+```json
+{
+  "id": "b06ee43d-94ab-43c6-97db-050251f4a0c7",
+  "target_url": "https://example.com/",
+  "status": "COMPLETED",
+  "http_status_code": 200,
+  "final_url": "https://example.com/",
+  "response_time_ms": 236,
+  "content_type": "text/html",
+  "server_header": "cloudflare",
+  "is_https": true,
+  "page_title": "Example Domain",
+  "redirect_count": 0,
+  "content_length": 559,
+  "error_message": null
+}
+```
+
+### Bounds and safety
+
+* **Only the given URL is requested.** No crawling, no directory or subdomain guessing, no port
+  scanning, no brute forcing, no exploitation.
+* **Bodies are barely read.** Non-HTML responses are never downloaded. HTML is read only up to
+  `SCANNER_MAX_RESPONSE_BYTES` (256 KiB), purely to recover the `<title>`. Response bodies are
+  never stored in PostgreSQL.
+* **Redirects are bounded** by `SCANNER_MAX_REDIRECTS` (5), and every hop is re-validated against
+  the SSRF rules before connecting — so a public URL cannot redirect the scanner onto
+  `127.0.0.1` or `169.254.169.254`. Redirect destinations are not themselves crawled.
+* **Two timeouts:** per-request `SCANNER_TIMEOUT_SECONDS` (10 s) and whole-scan
+  `SCANNER_TOTAL_TIMEOUT_SECONDS` (30 s). A scan cannot hang indefinitely.
+* **Only `http://` and `https://`** targets are accepted. `javascript:`, `file:`, `data:` and URLs
+  carrying credentials are rejected before any connection is attempted.
+* **A failing target never fails the request.** Unreachable hosts, DNS failures, TLS errors and
+  timeouts are recorded as a `FAILED` scan with a readable message; the API still returns `201`
+  and the application does not crash.
+
+### URL validation
+
+A bare host (`example.com`) is treated as `https://example.com/`. Anything else that is not a
+valid `http(s)` URL is rejected with `422` and a per-field message, rather than being silently
+rewritten into something unintended. Hostnames are lower-cased and internationalised domains are
+punycode-encoded.
+
+---
+
 ## API overview
 
 All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
@@ -343,15 +435,21 @@ the server and mirrored by Zod in the browser; the server is authoritative.
 
 ## Current limitations
 
-* **No vulnerability detection.** A scan is one HTTP request that records status code, response
-  time, final URL, redirect count, content type, `Server` header and whether HTTPS was used.
+* **No vulnerability detection.** A scan is one HTTP request. It records the fields listed above
+  and makes no security judgement about any of them.
+* **No crawling.** Only the exact URL submitted is requested. Links, sitemaps and redirect
+  destinations are not followed for discovery.
 * Scans run **inline in the request**, so creating a scan blocks until the probe finishes
   (bounded by `SCANNER_TOTAL_TIMEOUT_SECONDS`, default 30 s). There is no background worker, so
   `PENDING` and `RUNNING` are transient in practice — they exist so that moving execution to a
   queue later needs no schema change.
 * A target with an invalid TLS certificate fails the scan rather than being reported as a finding.
+* `page_title` is only recovered from HTML present in the response body. Titles set by client-side
+  JavaScript are not seen, because no browser engine is used.
+* `content_length` is `null` when a target uses chunked encoding and its body exceeded the read
+  limit — the scanner reports nothing rather than reporting its own cap as the page size.
 * DNS rebinding between validation and connection is not defended against; closing that requires
-  pinning the resolved address into the connection, planned with the Phase 2 crawler.
+  pinning the resolved address into the connection, planned alongside the crawler.
 * Sessions cannot be revoked server-side before the token expires (no token denylist).
 * Email addresses cannot be changed; there is no password reset or email verification.
 * No automated test suite yet.
@@ -360,14 +458,16 @@ the server and mirrored by Zod in the browser; the server is authoritative.
 
 ## Future scanner phases
 
-Planned, in order. None of it is implemented today.
+Planned, in order. Everything from Phase 3 onward is unimplemented.
 
-| Phase | Scope |
-| ----- | ----- |
-| 2 | Crawler, endpoint discovery, `Finding` model, severity and risk scoring |
-| 3 | Passive analysis: security headers, cookie flags, TLS inspection, CORS policy |
-| 4 | Active testing: XSS, SQL injection, open redirect, API security checks |
-| 5 | Reporting and export, background execution for long-running scans |
+| Phase | Scope | State |
+| ----- | ----- | ----- |
+| 1 | Auth, dashboard, scan management, basic HTTP probe | done |
+| 2 | Response analysis: page title, content type, size, redirect chain | **done - current release** |
+| 3 | Crawler, endpoint discovery, `Finding` model, severity and risk scoring | planned |
+| 4 | Passive analysis: security headers, cookie flags, TLS inspection, CORS policy | planned |
+| 5 | Active testing: XSS, SQL injection, open redirect, API security checks | planned |
+| 6 | Reporting and export, background execution for long-running scans | planned |
 
 Each becomes a `ScanModule` behind the protocol already defined in
 `backend/app/scanner/types.py`, registered in the `WebScanner` orchestrator. The API and database

@@ -53,6 +53,8 @@ class ScanRead(BaseModel):
     server_header: str | None
     is_https: bool | None
     redirect_count: int | None
+    page_title: str | None
+    content_length: int | None
     error_message: str | None
 
 
