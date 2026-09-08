@@ -2,7 +2,12 @@
 
 A web application for running and tracking HTTP reconnaissance scans against sites you own.
 
-**This is the Phase 8 release: conservative SQL-injection detection.** A second active
+**This is the Phase 9 release: the reporting layer.** Everything the scanner has recorded is
+now available as a single canonical report — an API endpoint, a dedicated results page, and a
+downloadable JSON document. Reporting is strictly read-only: generating a report re-runs no
+detector, sends no request to the target, and changes nothing about how scanning works.
+
+Phase 8 added the second active detector: A second active
 detector runs on the Phase 7 framework, testing discovered GET query parameters for
 error-based and boolean-differential SQL injection. It shares the same probe engine, scope
 rules and budget as the XSS detector; XSS behaviour is unchanged.
@@ -106,8 +111,12 @@ web-scanner/
 │       │   ├── cookies.py             # httpOnly auth cookie
 │       │   ├── deps.py                # get_current_user, DbSession
 │       │   └── errors.py              # error types + structured payload
+│       ├── reporting/                 # phase 9, read-only
+│       │   ├── types.py              # canonical ScanReport
+│       │   ├── builder.py            # rows -> report (pure, deterministic)
+│       │   └── service.py            # ownership-scoped loading
 │       ├── models/                    # user, scan, finding, attack_surface
-│       ├── schemas/                   # auth, user, scan, finding, attack_surface, common
+│       ├── schemas/                   # auth, user, scan, finding, attack_surface, report, common
 │       ├── routers/                   # auth.py, users.py, scans.py
 │       ├── services/                  # auth, scan, finding, attack_surface
 │       └── scanner/                   # isolated engine
@@ -175,12 +184,13 @@ web-scanner/
         │   ├── scans/                 # table, badges, result sections, create form
         │   ├── findings/               # findings section, severity badges
         │   ├── attack-surface/         # endpoints, forms, parameters
+        │   ├── report/                # summary, coverage, filterable findings
         │   ├── dashboard/             # stat card
         │   └── common/                # page header, empty/error states
         ├── hooks/                     # use-auth.tsx, use-async-data.ts
         ├── lib/                       # api-client.ts, errors.ts, format.ts
         ├── services/                  # auth.service.ts, user.service.ts, scan.service.ts
-        └── types/                     # user, scan, finding, attack-surface, api
+        └── types/                     # user, scan, finding, attack-surface, report, api
 ```
 
 ---
@@ -289,7 +299,7 @@ Always change the schema through a migration; never edit the database by hand.
 
 ```bash
 cd backend
-.venv\Scripts\python -m pytest          # 327 tests
+.venv\Scripts\python -m pytest          # 357 tests
 ```
 
 | Suite | Covers |
@@ -309,6 +319,7 @@ cd backend
 | `test_sqli_analyzer.py` | Error signatures per engine, false-positive control, differential logic |
 | `test_sqli_detector.py` | Probe sequence, baseline comparison, budget, scope, content types |
 | `test_sqli_integration.py` | SQLi findings inside the existing finding architecture |
+| `test_reporting.py` | Report construction, coverage, determinism, authorization, leakage |
 | `test_findings_api.py` | Findings API ownership and isolation |
 | `test_attack_surface_api.py` | Endpoint/form API ownership and isolation |
 
@@ -1039,6 +1050,88 @@ detector off.
 
 ---
 
+## Reporting (Phase 9)
+
+The scanner records a lot; Phase 9 turns it into something a person can read and a machine can
+consume — without a second copy of the data.
+
+```
+PostgreSQL (existing tables)
+      |
+report builder          pure assembly, deterministic ordering
+      |
+canonical ScanReport    one representation
+      |
+      |-- JSON API        GET /api/scans/{id}/report
+      |-- JSON download   GET /api/scans/{id}/report/json
+      +-- report page     /dashboard/scans/{id}/report
+```
+
+**One canonical representation.** The API, the page and the download all read the same built
+report, so they cannot disagree. A later exporter (PDF, SARIF) plugs in at the same point rather
+than querying the database again.
+
+**Read-only.** The reporting layer holds no session of its own, makes no network call, and never
+invokes a detector. Requesting a report is free of side effects and returns an identical document
+each time.
+
+### Deterministic ordering
+
+Findings sort by **severity descending, then category, then rule id, then subject** — defined in
+the report layer, never inherited from database row order. Two reports built from the same stored
+rows are byte-identical, which is what makes the JSON diffable and safe for a CI check.
+
+### Coverage is part of the verdict
+
+A report never presents "no findings" as "secure". `coverage.is_complete` is true only when every
+discovered endpoint was analysed or deliberately skipped, with no analysis failures. The UI wording
+follows it:
+
+| Situation | What the report says |
+| --------- | -------------------- |
+| Findings recorded | "N findings recorded — highest severity …" |
+| No findings, full coverage | "No findings from the checks performed" — plus an explicit note that this is not proof of security |
+| No findings, partial coverage | "No findings, but coverage was incomplete" — treated as inconclusive |
+| Scan failed | "The scan did not complete" — no conclusion can be drawn |
+| Scan running | "This scan is still running" — not final |
+
+Endpoints that failed analysis are called out separately: their state is *unknown*, not clean.
+
+### API
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET | `/api/scans/{scan_id}/report` | The canonical report as JSON |
+| GET | `/api/scans/{scan_id}/report/json` | The same document with a `Content-Disposition` attachment header |
+
+Both require authentication and resolve ownership through the same user-scoped lookup as every
+other scan endpoint — another user's scan returns **404, not 403**, so the endpoint does not
+confirm that a scan exists. A test asserts the 404 body does not contain the scan id.
+
+### Report contents
+
+Metadata (target, status, start/end, duration, generated-at), coverage counters, severity
+summary, per-category groups, the attack-surface summary, discovered parameter **names**, and for
+each finding: rule id, category, severity, confidence, title, description, impact, remediation,
+normalised evidence, occurrence count and every affected endpoint.
+
+### What a report never contains
+
+There is **no field** in the report schema for a cookie value, an authorization header, a
+credential, a request body, a probe value, an injected payload or a reflected marker — a secret
+has nowhere to go. Evidence is the detectors' own normalised wording, which names parameters,
+contexts and database families rather than values. Endpoint URLs are the canonical form carrying
+parameter names only. Report contents are never logged. Tests assert all of this against a live
+report body.
+
+### Frontend
+
+`/dashboard/scans/{id}/report` presents an executive summary, the verdict, severity overview,
+coverage and attack surface, and a filterable findings list (by severity, category and
+confidence) with expandable detail. "Download JSON" saves the canonical document.
+
+---
+
 ## API overview
 
 All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
@@ -1080,6 +1173,8 @@ All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
 | GET    | `/api/scans/{scan_id}/findings` | yes | Deduplicated findings with endpoint context and occurrences |
 | GET    | `/api/scans/{scan_id}/endpoints` | yes | URLs the crawler reached, with parameter names |
 | GET    | `/api/scans/{scan_id}/forms` | yes | Forms found on crawled pages, with their fields |
+| GET    | `/api/scans/{scan_id}/report` | yes | Canonical security report for one scan |
+| GET    | `/api/scans/{scan_id}/report/json` | yes | The same report as a JSON download |
 | DELETE | `/api/scans/{scan_id}` | yes | Delete one scan |
 
 ### System
@@ -1169,6 +1264,10 @@ the server and mirrored by Zod in the browser; the server is authoritative.
 * **Path parameters are not tested** — `/products/1` is not probed as an input.
 * **Reflection is judged on one response.** An application that encodes differently depending on
   session state, `Accept` header or feature flag may be assessed on only one of its behaviours.
+* **A report summarises what this scanner observed.** It does not prove a target is secure:
+  authenticated areas, form submissions, JavaScript-rendered content and every vulnerability
+  class the scanner does not test are outside its scope. Reports are read-only views of stored
+  scan data and never re-run a scan.
 * **Absence of XSS findings does not prove the absence of XSS.** A static reflected-XSS detector
   misses application-specific cases by construction.
 * **Analysis covers only what the crawler reached.** Pages behind a login, behind a form, or
@@ -1216,10 +1315,11 @@ Planned, in order. Everything from Phase 3 onward is unimplemented.
 | 5 | Per-endpoint analysis, finding identity, deduplication, coverage | done |
 | 6 | Reflected XSS detection on query parameters | done |
 | 7 | Reusable active-probe framework; XSS migrated onto it | done |
-| 8 | Conservative SQL-injection detection (error-based + boolean) | **done - current release** |
-| 9 | TLS inspection, CORS policy, risk scoring | planned |
-| 10 | Further active testing: open redirect, API security checks | planned |
-| 11 | Reporting and export, background execution for long-running scans | planned |
+| 8 | Conservative SQL-injection detection (error-based + boolean) | done |
+| 9 | Reporting layer: canonical report, API, results page, JSON export | **done - current release** |
+| 10 | TLS inspection, CORS policy, risk scoring | planned |
+| 11 | Further active testing: open redirect, API security checks | planned |
+| 12 | Additional export formats (PDF, SARIF), background execution | planned |
 
 The attack surface discovered in Phase 4 is what later detectors will consume: endpoints and
 their parameters are the injection points an XSS or SQL-injection check needs, and forms are

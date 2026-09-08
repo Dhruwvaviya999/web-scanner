@@ -1,9 +1,10 @@
-import { apiClient } from "@/lib/api-client";
+import { API_BASE_URL, apiClient } from "@/lib/api-client";
 import type {
   EndpointListResponse,
   FormListResponse,
 } from "@/types/attack-surface";
 import type { FindingListResponse } from "@/types/finding";
+import type { ScanReport } from "@/types/report";
 import type {
   CreateScanPayload,
   ListScansParams,
@@ -50,6 +51,17 @@ export const scanService = {
   async forms(id: string): Promise<FormListResponse> {
     const { data } = await apiClient.get<FormListResponse>(`/scans/${id}/forms`);
     return data;
+  },
+
+  /** The canonical report. Read-only: generating it re-runs nothing. */
+  async report(id: string): Promise<ScanReport> {
+    const { data } = await apiClient.get<ScanReport>(`/scans/${id}/report`);
+    return data;
+  },
+
+  /** URL of the downloadable JSON report, for an anchor or window navigation. */
+  reportDownloadUrl(id: string): string {
+    return `${API_BASE_URL}/api/scans/${id}/report/json`;
   },
 
   async remove(id: string): Promise<void> {

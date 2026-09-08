@@ -22,8 +22,10 @@ from app.schemas.attack_surface import (
     FormRead,
 )
 from app.schemas.common import NOT_FOUND_RESPONSE, UNAUTHORIZED_RESPONSE
+from app.schemas.report import ScanReportRead
 from app.schemas.finding import FindingListResponse, FindingRead, FindingSummary
 from app.schemas.scan import ScanCreate, ScanListResponse, ScanRead, ScanStats
+from app.reporting import service as reporting_service
 from app.services import attack_surface_service, finding_service, scan_service
 
 router = APIRouter(prefix="/scans", tags=["scans"], responses=UNAUTHORIZED_RESPONSE)
@@ -149,6 +151,50 @@ def read_scan_forms(
     forms = attack_surface_service.list_forms(db, current_user, scan_id)
     return FormListResponse(
         items=[FormRead.model_validate(f) for f in forms], total=len(forms)
+    )
+
+
+@router.get(
+    "/{scan_id}/report",
+    response_model=ScanReportRead,
+    summary="Canonical security report for one scan",
+    responses=NOT_FOUND_RESPONSE,
+)
+def read_scan_report(
+    scan_id: uuid.UUID, current_user: CurrentUser, db: DbSession
+) -> ScanReportRead:
+    """The full report for a scan the caller owns.
+
+    Read-only: generated from data the scan already persisted. It issues no
+    requests to the target and re-runs no detector, so calling it repeatedly is
+    free of side effects and yields an identical document each time.
+    """
+    report = reporting_service.generate_report(db, current_user, scan_id)
+    return ScanReportRead.model_validate(report)
+
+
+@router.get(
+    "/{scan_id}/report/json",
+    response_model=ScanReportRead,
+    summary="The same report as a downloadable JSON file",
+    responses=NOT_FOUND_RESPONSE,
+)
+def download_scan_report(
+    scan_id: uuid.UUID, current_user: CurrentUser, db: DbSession
+) -> Response:
+    """The canonical report with a Content-Disposition attachment header.
+
+    Identical content to `/report` — the only difference is that a browser saves
+    it rather than rendering it, so the two can never drift.
+    """
+    report = reporting_service.generate_report(db, current_user, scan_id)
+    payload = ScanReportRead.model_validate(report)
+    return Response(
+        content=payload.model_dump_json(indent=2),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="scan-{scan_id}-report.json"'
+        },
     )
 
 

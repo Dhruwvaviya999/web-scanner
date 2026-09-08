@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Trash2 } from "lucide-react";
+import { ArrowLeft, FileText, Trash2 } from "lucide-react";
 import { use, useCallback } from "react";
 
 import { ButtonLink } from "@/components/common/button-link";
@@ -74,16 +74,22 @@ export default function ScanDetailPage({ params }: PageProps<"/dashboard/scans/[
         title="Scan result"
         description={`Recorded ${formatDateTime(scan.created_at)}`}
         actions={
-          <DeleteScanDialog
-            scan={scan}
-            onDeleted={() => router.replace("/dashboard/scans")}
-            trigger={
-              <Button variant="outline">
-                <Trash2 className="size-4" aria-hidden />
-                Delete
-              </Button>
-            }
-          />
+          <>
+            <ButtonLink variant="outline" href={`/dashboard/scans/${id}/report`}>
+              <FileText className="size-4" aria-hidden />
+              View report
+            </ButtonLink>
+            <DeleteScanDialog
+              scan={scan}
+              onDeleted={() => router.replace("/dashboard/scans")}
+              trigger={
+                <Button variant="outline">
+                  <Trash2 className="size-4" aria-hidden />
+                  Delete
+                </Button>
+              }
+            />
+          </>
         }
       />
 
