@@ -21,6 +21,7 @@ from app.models.user import User
 from app.scanner import CrawlConfig, ScannerConfig, ScanReport, WebScanner
 from app.scanner.security.types import FindingSeverity
 from app.scanner import ActiveScanConfig, ProbeBudgetLimits
+from app.scanner.vulnerabilities.sqli.detector import SqlInjectionDetector
 from app.scanner.vulnerabilities.xss.detector import ReflectedXssDetector
 from app.services import attack_surface_service, finding_service
 
@@ -64,6 +65,29 @@ def _active_config() -> ActiveScanConfig:
     )
 
 
+def _active_detectors() -> list:
+    """The active detectors to run, gated by their per-detector enable flags.
+
+    The shared budget and scope come from `_active_config`; this only decides
+    which detectors participate. Order is not significant — they share one
+    budget and produce deterministic findings independently.
+    """
+    detectors: list = []
+    if settings.XSS_ENABLED:
+        detectors.append(
+            ReflectedXssDetector(
+                max_parameters_per_endpoint=settings.XSS_MAX_PARAMETERS_PER_ENDPOINT
+            )
+        )
+    if settings.SQLI_ENABLED:
+        detectors.append(
+            SqlInjectionDetector(
+                max_parameters_per_endpoint=settings.SQLI_MAX_PARAMETERS_PER_ENDPOINT
+            )
+        )
+    return detectors
+
+
 def create_scan(db: Session, user: User, target_url: str) -> Scan:
     """Persist a scan, run the probe, then store the outcome.
 
@@ -85,13 +109,7 @@ def create_scan(db: Session, user: User, target_url: str) -> Scan:
         _scanner_config(),
         crawl_config=_crawl_config(),
         active_config=_active_config(),
-        # The only active detector at this phase. Adding one later is a change
-        # to this list, not to the pipeline.
-        detectors=[
-            ReflectedXssDetector(
-                max_parameters_per_endpoint=settings.XSS_MAX_PARAMETERS_PER_ENDPOINT
-            )
-        ],
+        detectors=_active_detectors(),
     ).scan_sync(target_url)
     _apply_report(scan, report)
 

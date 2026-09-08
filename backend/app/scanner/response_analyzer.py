@@ -63,6 +63,40 @@ def media_type_of(content_type: str | None) -> str | None:
     return content_type.split(";", 1)[0].strip().lower() or None
 
 
+#: Media types whose body is text worth reading for analysis. Broader than HTML
+#: because SQL-injection error signatures surface in JSON, XML and plain text
+#: too. Still bounded by `max_response_bytes`; binary types are never read.
+_TEXTUAL_MEDIA_TYPES = frozenset(
+    {
+        "text/html",
+        "application/xhtml+xml",
+        "application/json",
+        "application/ld+json",
+        "application/xml",
+        "text/xml",
+        "application/javascript",
+        "text/javascript",
+    }
+)
+
+
+def is_textual_response(content_type: str | None) -> bool:
+    """True when the body is text the scanner can usefully read.
+
+    Covers `text/*` plus the common structured-text application types. A missing
+    Content-Type is treated as readable, so a misconfigured endpoint is not
+    silently skipped.
+    """
+    if not content_type:
+        return True
+    media = content_type.split(";", 1)[0].strip().lower()
+    if not media:
+        return True
+    if media in _TEXTUAL_MEDIA_TYPES:
+        return True
+    return media.startswith("text/")
+
+
 def is_html_response(content_type: str | None) -> bool:
     return media_type_of(content_type) in HTML_MEDIA_TYPES
 

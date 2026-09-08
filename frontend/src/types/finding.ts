@@ -4,6 +4,7 @@ export const FINDING_CATEGORIES = [
   "SECURITY_HEADER",
   "COOKIE",
   "XSS",
+  "SQLI",
   "TLS",
   "INFORMATION_DISCLOSURE",
   "OTHER",
@@ -76,6 +77,7 @@ export const CATEGORY_LABELS: Record<FindingCategory, string> = {
   SECURITY_HEADER: "Security header",
   COOKIE: "Cookie",
   XSS: "Cross-site scripting",
+  SQLI: "SQL injection",
   TLS: "TLS",
   INFORMATION_DISCLOSURE: "Information disclosure",
   OTHER: "Other",
@@ -92,4 +94,7 @@ export function parameterFromSubject(subject: string | null): string | null {
 }
 
 /** Categories that represent an actively tested vulnerability class. */
-export const ACTIVE_CATEGORIES: ReadonlySet<FindingCategory> = new Set<FindingCategory>(["XSS"]);
+export const ACTIVE_CATEGORIES: ReadonlySet<FindingCategory> = new Set<FindingCategory>([
+  "XSS",
+  "SQLI",
+]);

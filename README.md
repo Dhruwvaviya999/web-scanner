@@ -2,13 +2,20 @@
 
 A web application for running and tracking HTTP reconnaissance scans against sites you own.
 
-**This is the Phase 7 release: the active-probe framework.** Phase 6's reflected-XSS
-detector now runs on reusable infrastructure — a probe engine that owns scope, budget, timeouts
-and error handling, so a future detector inherits all of it rather than reimplementing it.
-XSS behaviour is unchanged by the refactor.
+**This is the Phase 8 release: conservative SQL-injection detection.** A second active
+detector runs on the Phase 7 framework, testing discovered GET query parameters for
+error-based and boolean-differential SQL injection. It shares the same probe engine, scope
+rules and budget as the XSS detector; XSS behaviour is unchanged.
 
-**Reflected XSS remains the only active detector.** There is no SQL-injection, stored-XSS,
-DOM-XSS, CSRF, SSRF, IDOR or open-redirect detection.
+**Detection only — never exploitation.** Every probe is a harmless syntax probe. The scanner
+does not extract data, enumerate schemas, run stacked queries, use UNION, use time-based blind
+techniques, or issue any write, delete or file operation. Active detection covers **reflected
+XSS and SQL injection on GET query parameters**; there is no stored/DOM XSS, CSRF, SSRF, IDOR
+or open-redirect detection.
+
+> **The scanner reports signals consistent with SQL injection; absence of a finding does not
+> prove an application is not vulnerable.** A conservative static/differential detector misses
+> application-specific cases by construction.
 
 Phase 6 introduced that detector: It provides authentication, scan management, a bounded HTTP probe, a
 bounded same-origin crawler, security-header and cookie analysis of every endpoint the crawl
@@ -127,13 +134,18 @@ web-scanner/
 │           │   ├── engine.py          # the only route to the network
 │           │   └── module.py          # runs registered detectors
 │           ├── vulnerabilities/       # active detectors
-│           │   └── xss/
-│           │       ├── types.py       # contexts, encoding states, probe
-│           │       ├── payloads.py    # inert marker generation
-│           │       ├── analyzer.py    # context + encoding analysis (pure)
+│           │   ├── xss/               # reflected XSS
+│           │   │   ├── types.py       # contexts, encoding states, probe
+│           │   │   ├── payloads.py    # inert marker generation
+│           │   │   ├── analyzer.py    # context + encoding analysis (pure)
+│           │   │   ├── findings.py    # severity/confidence rules (pure)
+│           │   │   └── detector.py    # eligibility + probe sequence
+│           │   └── sqli/              # SQL injection
+│           │       ├── types.py       # error signals, differential signals
+│           │       ├── payloads.py    # conservative syntax probes
+│           │       ├── analyzer.py    # error signatures + differential (pure)
 │           │       ├── findings.py    # severity/confidence rules (pure)
-│           │       ├── detector.py    # probe strategy, injectable fetcher
-│           │       └── module.py      # glue: transport -> observations
+│           │       └── detector.py    # eligibility + probe sequence
 │           └── crawler/               # attack-surface discovery
 │               ├── types.py           # CrawlConfig + discovered resources
 │               ├── url_normalizer.py  # normalisation + same-origin rules (pure)
@@ -277,7 +289,7 @@ Always change the schema through a migration; never edit the database by hand.
 
 ```bash
 cd backend
-.venv\Scripts\python -m pytest          # 270 tests
+.venv\Scripts\python -m pytest          # 327 tests
 ```
 
 | Suite | Covers |
@@ -294,6 +306,9 @@ cd backend
 | `test_xss_detector.py` | Probe budget, scope, non-HTML skipping, failure handling |
 | `test_xss_integration.py` | XSS findings inside the existing finding architecture |
 | `test_active_framework.py` | Probe building, budgets, comparison, engine scope and errors |
+| `test_sqli_analyzer.py` | Error signatures per engine, false-positive control, differential logic |
+| `test_sqli_detector.py` | Probe sequence, baseline comparison, budget, scope, content types |
+| `test_sqli_integration.py` | SQLi findings inside the existing finding architecture |
 | `test_findings_api.py` | Findings API ownership and isolation |
 | `test_attack_surface_api.py` | Endpoint/form API ownership and isolation |
 
@@ -962,6 +977,68 @@ phase there is exactly one active detector, and adding another is future work.
 
 ---
 
+## SQL-injection detection (Phase 8)
+
+A second active detector, on the Phase 7 framework. It reuses the probe engine, scope
+enforcement, budget and response-comparison utilities unchanged — the SQLi module adds only what
+is specific to SQL injection.
+
+### Two conservative techniques
+
+**Error-based.** A lone quote (or unbalanced fragment) is appended to a parameter. A query that
+concatenates the value unsafely becomes invalid and the engine emits an error; a parameterised
+query treats the same input as data and does not. A finding requires a database-error signature
+that is **present under the probe and absent from the baseline** — an error already in the
+baseline is not evidence.
+
+**Boolean-differential.** True-like / false-like pairs (`AND 1=1` vs `AND 1=2`, and a quoted
+variant) that keep the query valid either way, so only its truth value changes. A finding
+requires the true-like probe to track the baseline while the false-like probe diverges
+materially — **and the pattern must reproduce** on a second independent attempt. One clean
+difference is treated as noise.
+
+### Database error signatures
+
+Signatures are structured (`DatabaseErrorSignature`: family, strength, label, compiled pattern)
+and cover MySQL/MariaDB, PostgreSQL, SQL Server, Oracle, SQLite, and generic driver/SQLSTATE
+wording. Every pattern is **multi-token** — the bare word "SQL" never matches, and an ordinary
+error page without database wording is ignored. The analyzer classifies a body as
+`NONE` / `POSSIBLE` / `STRONG` and never draws the vulnerability conclusion itself; the detector
+does that by combining the signal with the baseline.
+
+### Content types
+
+Unlike XSS, SQLi is not limited to HTML — an error surfaces in JSON and plain text too, so
+`text/*`, `application/json` and `application/xml` responses are all analysed. Binary responses
+are skipped. (This phase widened the shared transport to download textual bodies, not only HTML.)
+
+### Rules, severity, confidence
+
+| Rule | When | Severity | Confidence |
+| ---- | ---- | -------- | ---------- |
+| `SQLI_ERROR_BASED` | Engine-specific error, probe-induced | HIGH | HIGH |
+| `SQLI_ERROR_BASED` | Generic driver/SQLSTATE error | HIGH | MEDIUM |
+| `SQLI_BOOLEAN_DIFFERENTIAL` | Reproduced true/false divergence | HIGH | HIGH |
+
+**Nothing is CRITICAL.** Timing is never a signal, a status-code change alone is never a signal,
+and a size change alone is never a signal. The wording says "consistent with", never "confirmed".
+
+### Safety and budget
+
+The detector reaches the network only through the `ProbeEngine`, so it inherits every Phase 7
+protection: URL validation, the SSRF guard, the same-origin lock re-checked on redirects,
+allowed schemes, the redirect limit, the request timeout, and the shared `ProbeBudget`. Probe
+volume is small and bounded — a baseline, up to two error probes (stopping on the first
+baseline-absent error), then boolean pairs only if error-based found nothing, all within the
+per-parameter / per-endpoint / per-scan ceilings. A refused probe is not an error and never
+creates a finding.
+
+Evidence names the parameter and the database family only. No query, probe value, response
+content, cookie or authorization header is ever stored, and `SQLI_ENABLED=false` turns the
+detector off.
+
+---
+
 ## API overview
 
 All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
@@ -1075,9 +1152,12 @@ the server and mirrored by Zod in the browser; the server is authoritative.
   carry MEDIUM confidence.
 * **Only cookies set on the scanned response are seen.** Cookies set after login, or by
   JavaScript, are invisible to this scanner.
-* **Only one vulnerability class is actively tested.** Reflected XSS on GET query parameters.
-  The Phase 7 framework is built to carry more detectors, but none exist yet — there is no
-  SQL-injection, CSRF, SSRF, IDOR or open-redirect testing.
+* **Two vulnerability classes are actively tested:** reflected XSS and SQL injection, both on
+  GET query parameters only. There is no CSRF, SSRF, IDOR or open-redirect testing.
+* **SQLi detection is conservative and signal-based.** It never extracts data, enumerates a
+  schema, runs stacked queries, uses UNION, or uses time-based blind techniques. It reports
+  error-based and reproduced boolean-differential signals; a vulnerability reachable only by
+  those excluded techniques will not be found, and a clean result is not proof of safety.
 * **Active probing covers GET query parameters only.** POST bodies, path segments, headers and
   cookies are not probed; extending the input surface is future work.
 * **No stored XSS.** A payload that is saved and rendered on a later request is never seen: the
@@ -1135,10 +1215,11 @@ Planned, in order. Everything from Phase 3 onward is unimplemented.
 | 4 | Crawler, endpoint / parameter / form discovery | done |
 | 5 | Per-endpoint analysis, finding identity, deduplication, coverage | done |
 | 6 | Reflected XSS detection on query parameters | done |
-| 7 | Reusable active-probe framework; XSS migrated onto it | **done - current release** |
-| 8 | TLS inspection, CORS policy, risk scoring | planned |
-| 9 | Further active testing: SQL injection, open redirect, API security checks | planned |
-| 10 | Reporting and export, background execution for long-running scans | planned |
+| 7 | Reusable active-probe framework; XSS migrated onto it | done |
+| 8 | Conservative SQL-injection detection (error-based + boolean) | **done - current release** |
+| 9 | TLS inspection, CORS policy, risk scoring | planned |
+| 10 | Further active testing: open redirect, API security checks | planned |
+| 11 | Reporting and export, background execution for long-running scans | planned |
 
 The attack surface discovered in Phase 4 is what later detectors will consume: endpoints and
 their parameters are the injection points an XSS or SQL-injection check needs, and forms are

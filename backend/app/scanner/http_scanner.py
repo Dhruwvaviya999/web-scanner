@@ -23,7 +23,7 @@ from urllib.parse import urljoin
 
 import httpx
 
-from app.scanner.response_analyzer import analyze_response, is_html_response
+from app.scanner.response_analyzer import analyze_response, is_textual_response
 from app.scanner.types import (
     RawHttpResponse,
     ScanErrorCode,
@@ -135,12 +135,12 @@ class HttpFetcher:
     async def _read_body(self, response: httpx.Response) -> tuple[bytes, bool]:
         """Read at most `max_response_bytes` of an HTML body.
 
-        Non-HTML responses are never downloaded — bodies are only read to
-        recover the page title and, for the crawler, its links and forms. A read
-        that fails partway is tolerated: the status and headers already gathered
-        are worth keeping.
+        Only textual bodies are downloaded — HTML for the crawler and title
+        extraction, plus JSON/XML/text so the active detectors can inspect them.
+        Binary responses are skipped. A read that fails partway is tolerated:
+        the status and headers already gathered are worth keeping.
         """
-        if not is_html_response(response.headers.get("content-type")):
+        if not is_textual_response(response.headers.get("content-type")):
             return b"", False
 
         limit = self._config.max_response_bytes

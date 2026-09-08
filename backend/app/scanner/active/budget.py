@@ -18,9 +18,9 @@ from dataclasses import dataclass, field
 class ProbeBudgetLimits:
     """Configured ceilings. Every one of them is required."""
 
-    per_parameter: int = 4
-    per_endpoint: int = 24
-    per_scan: int = 120
+    per_parameter: int = 8
+    per_endpoint: int = 32
+    per_scan: int = 160
 
     def __post_init__(self) -> None:
         for name in ("per_parameter", "per_endpoint", "per_scan"):

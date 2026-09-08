@@ -90,13 +90,17 @@ class Settings(BaseSettings):
     # Budgets for every active detector, shared across a scan. Probes only ever
     # target URLs already inside the authorised scan scope.
     ACTIVE_SCAN_ENABLED: bool = True
-    MAX_ACTIVE_PROBES_PER_PARAMETER: int = Field(default=4, gt=0, le=50)
-    MAX_ACTIVE_PROBES_PER_ENDPOINT: int = Field(default=24, gt=0, le=500)
-    MAX_ACTIVE_PROBES_PER_SCAN: int = Field(default=120, gt=0, le=2000)
+    XSS_ENABLED: bool = True
+    MAX_ACTIVE_PROBES_PER_PARAMETER: int = Field(default=8, gt=0, le=50)
+    MAX_ACTIVE_PROBES_PER_ENDPOINT: int = Field(default=32, gt=0, le=500)
+    MAX_ACTIVE_PROBES_PER_SCAN: int = Field(default=160, gt=0, le=2000)
     ACTIVE_SCAN_MAX_TARGETS: int = Field(default=25, gt=0, le=200)
     # Parameters one detector will test on a single endpoint. The budgets above
     # still apply on top of this.
     XSS_MAX_PARAMETERS_PER_ENDPOINT: int = Field(default=8, gt=0, le=50)
+    # SQL-injection detector. Shares the active-probe budgets above.
+    SQLI_ENABLED: bool = True
+    SQLI_MAX_PARAMETERS_PER_ENDPOINT: int = Field(default=6, gt=0, le=50)
 
     @field_validator("JWT_SECRET_KEY")
     @classmethod

@@ -54,6 +54,8 @@ class FindingCategory(str, enum.Enum):
     COOKIE = "COOKIE"
     #: Cross-site scripting. Phase 6 emits only reflected XSS.
     XSS = "XSS"
+    #: SQL injection. Phase 8 emits error-based and boolean-differential.
+    SQLI = "SQLI"
     TLS = "TLS"
     INFORMATION_DISCLOSURE = "INFORMATION_DISCLOSURE"
     OTHER = "OTHER"
@@ -87,6 +89,10 @@ class FindingRule(str, enum.Enum):
     # --- Injection ---
     #: Reflected cross-site scripting. Active detection, inert marker only.
     XSS_REFLECTED = "XSS_REFLECTED"
+    #: SQL injection surfaced by a database error under a syntax probe.
+    SQLI_ERROR_BASED = "SQLI_ERROR_BASED"
+    #: SQL injection surfaced by a reproducible true/false response difference.
+    SQLI_BOOLEAN_DIFFERENTIAL = "SQLI_BOOLEAN_DIFFERENTIAL"
 
     # --- Cookies ---
     COOKIE_SECURE_MISSING = "COOKIE_SECURE_MISSING"
