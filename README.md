@@ -2,13 +2,17 @@
 
 A web application for running and tracking HTTP reconnaissance scans against sites you own.
 
-**This is the Phase 2 release: a basic HTTP website scanner.** It provides authentication, scan
-management, and a single bounded HTTP request per scan whose response is analysed and stored.
+**This is the Phase 3 release: a basic security-configuration scanner.** It provides
+authentication, scan management, one bounded HTTP request per scan, and analysis of that
+response's security headers and cookies, recorded as structured findings.
 
-It performs **no vulnerability detection.** There is no crawling, no security-header or cookie
-analysis, no TLS posture assessment, no XSS or SQL-injection testing, no CORS checks and no risk
-scoring. Nothing in the UI is a security verdict — every value shown was directly measured from
-one HTTP response.
+**It performs no vulnerability testing.** No payloads are sent. There is no crawling, no TLS
+inspection, no XSS, SQL-injection, CSRF, SSRF or IDOR testing, no CORS analysis and no risk
+scoring.
+
+> The scanner currently performs basic HTTP and security-configuration analysis. **It does not
+> guarantee that a website is secure.** A scan with no findings means the specific checks listed
+> below found nothing on a single response — not that the site is safe.
 
 ---
 
@@ -67,7 +71,8 @@ web-scanner/
 │   │   ├── env.py                     # reads DATABASE_URL from app settings
 │   │   └── versions/
 │   │       ├── 0001_initial_schema.py
-│   │       └── 0002_scan_response_analysis.py
+│   │       ├── 0002_scan_response_analysis.py
+│   │       └── 0003_findings.py
 │   └── app/
 │       ├── main.py                    # app wiring, CORS, exception handlers
 │       ├── core/
@@ -77,16 +82,22 @@ web-scanner/
 │       │   ├── cookies.py             # httpOnly auth cookie
 │       │   ├── deps.py                # get_current_user, DbSession
 │       │   └── errors.py              # error types + structured payload
-│       ├── models/                    # user.py, scan.py
-│       ├── schemas/                   # auth.py, user.py, scan.py, common.py
+│       ├── models/                    # user.py, scan.py, finding.py
+│       ├── schemas/                   # auth.py, user.py, scan.py, finding.py, common.py
 │       ├── routers/                   # auth.py, users.py, scans.py
-│       ├── services/                  # auth_service.py, scan_service.py
+│       ├── services/                  # auth_service.py, scan_service.py, finding_service.py
 │       └── scanner/                   # isolated engine
 │           ├── types.py               # dataclasses + ScanModule protocol
 │           ├── url_validator.py       # parsing + SSRF protection
 │           ├── http_scanner.py        # transport: request, redirects, bounded read
 │           ├── response_analyzer.py   # interpretation: title, type, size (pure)
-│           └── scanner.py             # orchestrator
+│           ├── scanner.py             # orchestrator
+│           └── security/              # detectors, all pure
+│               ├── types.py           # FindingData + severity/confidence/category
+│               ├── headers.py         # security-header rules
+│               ├── cookies.py         # Set-Cookie parsing + cookie rules
+│               └── module.py          # glue: response -> findings
+│   └── tests/                         # pytest: headers, cookies, findings API
 │
 └── frontend/
     ├── .env.example
@@ -107,12 +118,13 @@ web-scanner/
         │   ├── layout/                # sidebar, header, user menu, mobile nav
         │   ├── auth/                  # login/register forms, AuthGuard
         │   ├── scans/                 # table, badges, result sections, create form
+        │   ├── findings/               # findings section, severity badges
         │   ├── dashboard/             # stat card
         │   └── common/                # page header, empty/error states
         ├── hooks/                     # use-auth.tsx, use-async-data.ts
         ├── lib/                       # api-client.ts, errors.ts, format.ts
         ├── services/                  # auth.service.ts, user.service.ts, scan.service.ts
-        └── types/                     # user.ts, scan.ts, api.ts
+        └── types/                     # user.ts, scan.ts, finding.ts, api.ts
 ```
 
 ---
@@ -214,6 +226,20 @@ alembic revision --autogenerate -m "describe the change"
 ```
 
 Always change the schema through a migration; never edit the database by hand.
+
+---
+
+## Tests
+
+```bash
+cd backend
+.venv\Scripts\python -m pytest          # 52 tests
+```
+
+`tests/test_security_headers.py` and `tests/test_cookies.py` cover the detectors as pure
+functions — no network, no database. `tests/test_findings_api.py` drives the real app through
+FastAPI's `TestClient` against the configured database, registering a fresh user per test and
+cleaning up afterwards.
 
 ---
 
@@ -334,6 +360,107 @@ punycode-encoded.
 
 ---
 
+## Security analysis (Phase 3)
+
+Every check runs against the response the HTTP probe already collected. **No additional requests
+are made to the target**, which is what keeps this phase passive.
+
+### The Finding model
+
+A scan has zero or many findings. Each records what was seen and what to do about it:
+
+| Field | Meaning |
+| ----- | ------- |
+| `code` | Stable rule identifier, e.g. `missing_csp` — correlate across scans without matching prose |
+| `title` | Short summary |
+| `category` | `SECURITY_HEADER` or `COOKIE` in this phase; `TLS`, `INFORMATION_DISCLOSURE`, `OTHER` reserved |
+| `severity` | `CRITICAL` / `HIGH` / `MEDIUM` / `LOW` / `INFO` |
+| `confidence` | `HIGH` / `MEDIUM` / `LOW` |
+| `description` | What was observed and why it matters |
+| `evidence` | The specific observation. **Never contains a secret or a cookie value.** |
+| `impact` | What could follow, stated conditionally where nothing was confirmed |
+| `remediation` | The concrete fix |
+
+**Severity** is about consequence if confirmed. Missing security headers are defence-in-depth
+configuration observations, so nothing in this phase is emitted above `MEDIUM` — a test asserts
+this. **Confidence** is about certainty: `HIGH` when the response was observed directly (a header
+is present or absent), `MEDIUM` when a heuristic was involved (inferring a cookie's purpose from
+its name).
+
+### Architecture
+
+```
+Router -> Scan Service -> Scanner -> HttpScanner -> ResponseAnalyzer
+                                          |
+                                          +-> SecurityAnalysisModule
+                                                |-> headers.py   (pure)
+                                                +-> cookies.py   (pure)
+                                                      |
+                                                 FindingData
+                                                      |
+                                          finding_service -> database
+```
+
+The detectors are pure functions: headers and cookies in, `FindingData` out. They hold no session
+and import no model, so every rule is testable without a network or a database. `finding_service`
+is the only place findings become rows, and it writes them in the same transaction as the scan
+result — a scan is never left `COMPLETED` with its findings missing.
+
+### Security header rules
+
+| Check | When missing | Severity | Notes |
+| ----- | ------------ | -------- | ----- |
+| `Strict-Transport-Security` | HTTPS only | MEDIUM | **Never reported for an HTTP target** — browsers ignore the header there, so flagging it would be a false positive. `max-age=0` -> LOW, a short `max-age` -> INFO |
+| `Content-Security-Policy` | document responses | MEDIUM | Present but containing `unsafe-inline` / `unsafe-eval` / wildcard `default-src` -> INFO. No full CSP parser is attempted |
+| `X-Content-Type-Options` | any response | LOW | `nosniff` accepted case-insensitively; any other value is reported |
+| `X-Frame-Options` | document responses | LOW | `DENY` / `SAMEORIGIN` accepted. **Not reported when CSP sets `frame-ancestors`**, which supersedes it |
+| `Referrer-Policy` | document responses | LOW | |
+| `Permissions-Policy` | document responses | INFO | Hardening opportunity rather than a weakness |
+
+Two rules keep the output honest rather than merely long:
+
+* **HSTS is HTTPS-only**, as above.
+* **Document-scoped headers are only checked on documents.** CSP, X-Frame-Options,
+  Referrer-Policy and Permissions-Policy govern how a page is rendered, so reporting them missing
+  on a JSON API endpoint is noise. A response with no `Content-Type` at all is treated as a
+  document, so a misconfigured server is not silently exempted.
+
+### Cookie rules
+
+Every `Set-Cookie` header is parsed for name, `Secure`, `HttpOnly`, `SameSite`, `Domain` and
+`Path`.
+
+**Cookie values are discarded during parsing.** `CookieInfo` has no `value` field at all, so there
+is no path by which a session identifier could reach a finding, a log or the database. This is
+structural, not a convention, and is covered by a test.
+
+| Check | Severity | Notes |
+| ----- | -------- | ----- |
+| Missing `Secure` on HTTPS | MEDIUM session-like / LOW otherwise | Not reported over HTTP, where the attribute is ignored anyway |
+| Session-like cookie missing `HttpOnly` | MEDIUM, MEDIUM confidence | **Only for session-like names.** Many cookies are read by scripts by design |
+| Missing `SameSite` | LOW session-like / INFO otherwise | Browsers default to Lax, so this is mostly a portability concern |
+| `SameSite=None` without `Secure` | MEDIUM, HIGH confidence | Browsers reject this outright, so the cookie is likely never stored |
+
+A cookie is treated as "session-like" by name — `session`, `sessionid`, `PHPSESSID`,
+`JSESSIONID`, `connect.sid`, `laravel_session`, `access_token`, `jwt` and similar, plus fragments
+such as `auth`, `token` and `login`. Short fragments like `sid` only match as whole words, so
+`sidebar_state` is not mistaken for a session cookie. Because this is a heuristic, findings that
+depend on it carry MEDIUM confidence and say so in their description.
+
+### False-positive philosophy
+
+The goal is a scanner worth trusting, not one that produces a large number of findings.
+
+* Missing headers are described as configuration observations, never as exploitable
+  vulnerabilities.
+* Impact is stated conditionally: "if a cross-site scripting flaw exists" — because this phase
+  performs no injection testing and cannot know.
+* A well-configured site produces few findings. Scanning `github.com` yields two, both INFO.
+* An empty result is reported as *"No findings were detected by the checks performed in this
+  scan"*, never as "this site is secure".
+
+---
+
 ## API overview
 
 All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
@@ -372,6 +499,7 @@ All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
 | GET    | `/api/scans` | yes | List the caller's scans (`limit`, `offset`, `status`) |
 | GET    | `/api/scans/stats` | yes | Scan counts by status |
 | GET    | `/api/scans/{scan_id}` | yes | Read one scan |
+| GET    | `/api/scans/{scan_id}/findings` | yes | Security findings for one scan, most severe first |
 | DELETE | `/api/scans/{scan_id}` | yes | Delete one scan |
 
 ### System
@@ -435,8 +563,16 @@ the server and mirrored by Zod in the browser; the server is authoritative.
 
 ## Current limitations
 
-* **No vulnerability detection.** A scan is one HTTP request. It records the fields listed above
-  and makes no security judgement about any of them.
+* **No vulnerability testing.** A scan is one HTTP request. Security headers and cookies on that
+  response are assessed; nothing is probed, and no payload is ever sent.
+* **Findings are configuration observations.** Their absence does not mean a site is secure — it
+  means these particular checks found nothing on one response.
+* **Cookie classification is name-based.** A session cookie with an unusual name will not be
+  recognised as one; a non-session cookie named `auth_pref` would be. Findings that depend on this
+  carry MEDIUM confidence.
+* **Only cookies set on the scanned response are seen.** Cookies set after login, or by
+  JavaScript, are invisible to this scanner.
+* **Header analysis reflects one URL.** Another path on the same site may send different headers.
 * **No crawling.** Only the exact URL submitted is requested. Links, sitemaps and redirect
   destinations are not followed for discovery.
 * Scans run **inline in the request**, so creating a scan blocks until the probe finishes
@@ -463,9 +599,9 @@ Planned, in order. Everything from Phase 3 onward is unimplemented.
 | Phase | Scope | State |
 | ----- | ----- | ----- |
 | 1 | Auth, dashboard, scan management, basic HTTP probe | done |
-| 2 | Response analysis: page title, content type, size, redirect chain | **done - current release** |
-| 3 | Crawler, endpoint discovery, `Finding` model, severity and risk scoring | planned |
-| 4 | Passive analysis: security headers, cookie flags, TLS inspection, CORS policy | planned |
+| 2 | Response analysis: page title, content type, size, redirect chain | done |
+| 3 | `Finding` model, security-header and cookie analysis | **done - current release** |
+| 4 | Crawler, endpoint discovery, TLS inspection, CORS policy, risk scoring | planned |
 | 5 | Active testing: XSS, SQL injection, open redirect, API security checks | planned |
 | 6 | Reporting and export, background execution for long-running scans | planned |
 

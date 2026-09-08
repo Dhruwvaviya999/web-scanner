@@ -45,6 +45,9 @@ class HttpProbeModule:
 
     async def run(self, target: ScanTarget, report: ScanReport) -> None:
         raw = await self._fetch(target)
+        # Kept on the report so the security detectors can read the headers and
+        # cookies without a second request to the target.
+        report.raw = raw
         report.probe = analyze_response(raw)
 
     async def _fetch(self, target: ScanTarget) -> RawHttpResponse:
@@ -95,6 +98,9 @@ class HttpProbeModule:
                         elapsed_ms=elapsed_ms,
                         body=body,
                         body_truncated=truncated,
+                        # get_list keeps each Set-Cookie separate; indexing the
+                        # mapping would join them with commas and corrupt parsing.
+                        set_cookie=tuple(response.headers.get_list("set-cookie")),
                     )
                 finally:
                     await response.aclose()

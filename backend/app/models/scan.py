@@ -29,6 +29,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base, TimestampMixin
 
 if TYPE_CHECKING:
+    from app.models.finding import Finding
     from app.models.user import User
 
 
@@ -84,6 +85,11 @@ class Scan(Base, TimestampMixin):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     user: Mapped["User"] = relationship(back_populates="scans")
+    findings: Mapped[list["Finding"]] = relationship(
+        back_populates="scan",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     __table_args__ = (
         # Backs the scan-history query: filter by owner, newest first.

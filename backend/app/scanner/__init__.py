@@ -7,6 +7,12 @@ the web application around it.
 """
 
 from app.scanner.response_analyzer import analyze_response, extract_page_title
+from app.scanner.security.types import (
+    FindingCategory,
+    FindingConfidence,
+    FindingData,
+    FindingSeverity,
+)
 from app.scanner.scanner import WebScanner
 from app.scanner.types import (
     HttpProbeResult,
@@ -20,6 +26,10 @@ from app.scanner.types import (
 from app.scanner.url_validator import parse_target_url
 
 __all__ = [
+    "FindingCategory",
+    "FindingConfidence",
+    "FindingData",
+    "FindingSeverity",
     "HttpProbeResult",
     "RawHttpResponse",
     "ScanErrorCode",

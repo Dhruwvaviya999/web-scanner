@@ -19,6 +19,7 @@ from app.core.errors import NotFoundError
 from app.models.scan import Scan, ScanStatus
 from app.models.user import User
 from app.scanner import ScannerConfig, ScanReport, WebScanner
+from app.services import finding_service
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,10 @@ def create_scan(db: Session, user: User, target_url: str) -> Scan:
 
     report = WebScanner(_scanner_config()).scan_sync(target_url)
     _apply_report(scan, report)
+
+    # Findings are written in the same transaction as the scan result, so a
+    # scan is never left COMPLETED with its findings missing.
+    finding_service.replace_findings(db, scan, report.findings)
 
     scan.completed_at = datetime.now(UTC)
     db.commit()

@@ -15,8 +15,9 @@ from fastapi import APIRouter, Query, Response, status
 from app.core.deps import CurrentUser, DbSession
 from app.models.scan import ScanStatus
 from app.schemas.common import NOT_FOUND_RESPONSE, UNAUTHORIZED_RESPONSE
+from app.schemas.finding import FindingListResponse, FindingRead, FindingSummary
 from app.schemas.scan import ScanCreate, ScanListResponse, ScanRead, ScanStats
-from app.services import scan_service
+from app.services import finding_service, scan_service
 
 router = APIRouter(prefix="/scans", tags=["scans"], responses=UNAUTHORIZED_RESPONSE)
 
@@ -73,6 +74,29 @@ def read_scan_stats(current_user: CurrentUser, db: DbSession) -> ScanStats:
 def read_scan(scan_id: uuid.UUID, current_user: CurrentUser, db: DbSession) -> ScanRead:
     scan = scan_service.get_scan(db, current_user, scan_id)
     return ScanRead.model_validate(scan)
+
+
+@router.get(
+    "/{scan_id}/findings",
+    response_model=FindingListResponse,
+    summary="Security findings for one scan",
+    responses=NOT_FOUND_RESPONSE,
+)
+def read_scan_findings(
+    scan_id: uuid.UUID, current_user: CurrentUser, db: DbSession
+) -> FindingListResponse:
+    """Findings for a scan the caller owns, most severe first.
+
+    Ownership is enforced by the same user-scoped lookup the scan endpoints
+    use, so another user's scan id yields 404 rather than exposing findings.
+    A scan with nothing to report returns an empty list, which is not the
+    same as the target being secure.
+    """
+    findings = finding_service.list_findings_for_scan(db, current_user, scan_id)
+    return FindingListResponse(
+        items=[FindingRead.model_validate(f) for f in findings],
+        summary=FindingSummary(**finding_service.summarize(findings)),
+    )
 
 
 @router.delete(

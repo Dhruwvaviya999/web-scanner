@@ -20,3 +20,6 @@ argon2-cffi==25.1.0
 
 # --- Scanner HTTP client ---
 httpx==0.28.1
+
+# --- Tests ---
+pytest==9.1.1

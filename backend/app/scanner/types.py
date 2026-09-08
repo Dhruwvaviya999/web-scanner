@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
 
+from app.scanner.security.types import FindingData
+
 
 class ScanErrorCode(str, Enum):
     """Why a scan could not be completed. Maps to a user-facing message."""
@@ -66,6 +68,9 @@ class RawHttpResponse:
     body: bytes = b""
     #: True when the body was longer than the scanner's read limit.
     body_truncated: bool = False
+    #: Every Set-Cookie header, kept separate because a response may send many
+    #: and a plain mapping would collapse them into one joined string.
+    set_cookie: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,9 +100,14 @@ class ScanReport:
 
     target: ScanTarget | None
     probe: HttpProbeResult | None = None
+    #: The unanalysed response, kept so later modules can inspect headers and
+    #: cookies without issuing another request.
+    raw: "RawHttpResponse | None" = None
+    #: Security observations produced by the detector modules.
+    findings: list["FindingData"] = field(default_factory=list)
     error_code: ScanErrorCode | None = None
     error_message: str | None = None
-    # Reserved for phase 2+: discovered endpoints, findings, risk score.
+    # Reserved for later phases: discovered endpoints, risk score.
     metadata: dict[str, object] = field(default_factory=dict)
 
     @property

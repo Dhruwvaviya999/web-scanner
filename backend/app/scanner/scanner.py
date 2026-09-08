@@ -13,6 +13,7 @@ import asyncio
 import logging
 
 from app.scanner.http_scanner import HttpProbeModule
+from app.scanner.security.module import SecurityAnalysisModule
 from app.scanner.types import (
     ScanErrorCode,
     ScannerConfig,
@@ -28,7 +29,13 @@ logger = logging.getLogger(__name__)
 class WebScanner:
     def __init__(self, config: ScannerConfig | None = None, modules: list[ScanModule] | None = None) -> None:
         self._config = config or ScannerConfig()
-        self._modules: list[ScanModule] = modules if modules is not None else [HttpProbeModule(self._config)]
+        # Order matters: the probe fetches, then the detectors interpret what it
+        # fetched. Later phases append further modules to this list.
+        self._modules: list[ScanModule] = (
+            modules
+            if modules is not None
+            else [HttpProbeModule(self._config), SecurityAnalysisModule()]
+        )
 
     async def scan(self, raw_url: str) -> ScanReport:
         """Run every module against `raw_url`. Never raises: failures land in the report."""

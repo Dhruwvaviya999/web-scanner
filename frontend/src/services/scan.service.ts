@@ -1,4 +1,5 @@
 import { apiClient } from "@/lib/api-client";
+import type { FindingListResponse } from "@/types/finding";
 import type {
   CreateScanPayload,
   ListScansParams,
@@ -26,6 +27,12 @@ export const scanService = {
 
   async get(id: string): Promise<Scan> {
     const { data } = await apiClient.get<Scan>(`/scans/${id}`);
+    return data;
+  },
+
+  /** Security findings for one scan, most severe first. */
+  async findings(id: string): Promise<FindingListResponse> {
+    const { data } = await apiClient.get<FindingListResponse>(`/scans/${id}/findings`);
     return data;
   },
 

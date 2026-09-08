@@ -8,6 +8,7 @@ import { ButtonLink } from "@/components/common/button-link";
 import { ErrorAlert } from "@/components/common/error-alert";
 import { FullPageLoader } from "@/components/common/full-page-loader";
 import { PageHeader } from "@/components/common/page-header";
+import { FindingsSection } from "@/components/findings/findings-section";
 import { DeleteScanDialog } from "@/components/scans/delete-scan-dialog";
 import { ScanStatusBadge } from "@/components/scans/scan-status-badge";
 import {
@@ -27,6 +28,13 @@ export default function ScanDetailPage({ params }: PageProps<"/dashboard/scans/[
 
   const fetchScan = useCallback(() => scanService.get(id), [id]);
   const { data: scan, loading, error } = useAsyncData(fetchScan);
+
+  const fetchFindings = useCallback(() => scanService.findings(id), [id]);
+  const {
+    data: findings,
+    loading: findingsLoading,
+    error: findingsError,
+  } = useAsyncData(fetchFindings);
 
   if (loading) return <FullPageLoader label="Loading scan…" />;
 
@@ -103,14 +111,22 @@ export default function ScanDetailPage({ params }: PageProps<"/dashboard/scans/[
         </>
       )}
 
+      <FindingsSection
+        data={findings}
+        loading={findingsLoading}
+        error={findingsError}
+        scanFailed={failed}
+      />
+
       <Card className="border-dashed">
         <CardContent className="space-y-2 text-sm">
           <p className="font-medium">Scope of this result</p>
           <p className="text-muted-foreground">
-            This scan performed a single HTTP GET against the target and recorded what came back.
-            No vulnerability detection has been run — security-header, cookie, TLS, injection and
-            CORS analysis arrive in later phases. Nothing above should be read as a security
-            verdict.
+            This scan performed a single HTTP GET against the target, recorded what came back,
+            and checked the response&apos;s security headers and cookies. No vulnerability testing
+            was performed — no payloads were sent, and no crawling, TLS, injection or CORS
+            analysis was run. Findings are configuration observations, not confirmed
+            vulnerabilities, and their absence does not mean the site is secure.
           </p>
           <p className="pt-1 font-mono text-xs text-muted-foreground">Scan ID: {scan.id}</p>
         </CardContent>
