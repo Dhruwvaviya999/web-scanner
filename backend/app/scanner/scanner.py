@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 
 from app.scanner.analysis.module import EndpointAnalysisModule
+from app.scanner.cancellation import CancellationToken, ScanCancelled
 from app.scanner.active.module import ActiveScanConfig, ActiveScanModule
 from app.scanner.active.types import ActiveDetector
 from app.scanner.vulnerabilities.xss.detector import ReflectedXssDetector
@@ -39,7 +41,16 @@ class WebScanner:
         crawl_config: CrawlConfig | None = None,
         active_config: ActiveScanConfig | None = None,
         detectors: list[ActiveDetector] | None = None,
+        cancellation: CancellationToken | None = None,
+        on_module_start: "Callable[[str], None] | None" = None,
     ) -> None:
+        # Cooperative cancellation. The scanner never learns how the flag is
+        # stored — it is handed a predicate and asks at safe boundaries.
+        self._cancellation = cancellation or CancellationToken.none()
+        # Coarse progress: called with each module's name as it begins, so the
+        # caller can persist a stage without the scanner knowing what a
+        # "stage" means in the application.
+        self._on_module_start = on_module_start
         self._config = config or ScannerConfig()
         self._crawl_config = crawl_config or CrawlConfig()
         self._active_config = active_config or ActiveScanConfig()
@@ -58,12 +69,17 @@ class WebScanner:
                 # endpoint the crawl captured. Analysis runs last because it
                 # consumes what the earlier stages produced.
                 HttpProbeModule(self._config),
-                CrawlModule(self._config, self._crawl_config),
-                EndpointAnalysisModule(),
+                CrawlModule(self._config, self._crawl_config, self._cancellation),
+                EndpointAnalysisModule(self._cancellation),
                 # Active probing runs last: it needs the discovered parameters,
                 # and its findings join the same aggregation. Adding a detector
                 # later means extending this list, nothing more.
-                ActiveScanModule(self._config, self._active_config, self._detectors),
+                ActiveScanModule(
+                    self._config,
+                    self._active_config,
+                    self._detectors,
+                    self._cancellation,
+                ),
             ]
         )
 
@@ -75,7 +91,16 @@ class WebScanner:
             report.target = target
             async with asyncio.timeout(self._config.total_timeout_seconds):
                 for module in self._modules:
+                    # Between modules is the cheapest safe boundary there is:
+                    # nothing is in flight and the report is consistent.
+                    self._cancellation.raise_if_cancelled(module.name)
+                    if self._on_module_start is not None:
+                        self._on_module_start(module.name)
                     await module.run(target, report)
+        except ScanCancelled:
+            # Not a failure. Everything gathered before the stop stands.
+            report.cancelled = True
+            logger.info("Scan cancelled for target %r", raw_url)
         except ScannerError as exc:
             report.error_code = exc.code
             report.error_message = exc.message

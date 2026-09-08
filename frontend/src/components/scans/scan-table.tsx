@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { ArrowUpRight } from "lucide-react";
 
+import { CancelScanDialog } from "@/components/scans/cancel-scan-dialog";
 import { DeleteScanDialog } from "@/components/scans/delete-scan-dialog";
 import { HttpStatusBadge } from "@/components/scans/http-status-badge";
 import { ScanStatusBadge } from "@/components/scans/scan-status-badge";
@@ -17,7 +18,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatDateTime, formatDuration, truncateUrl } from "@/lib/format";
-import type { Scan } from "@/types/scan";
+import { isScanActive, type Scan } from "@/types/scan";
 
 interface ScanTableProps {
   scans: Scan[];
@@ -71,7 +72,10 @@ export function ScanTable({ scans, loading = false, onChanged, compact = false }
                     ) : null}
                   </TableCell>
                   <TableCell>
-                    <ScanStatusBadge status={scan.status} />
+                    <ScanStatusBadge
+                      status={scan.status}
+                      cancelRequested={scan.cancel_requested}
+                    />
                   </TableCell>
                   <TableCell>
                     <HttpStatusBadge code={scan.http_status_code} />
@@ -100,6 +104,9 @@ export function ScanTable({ scans, loading = false, onChanged, compact = false }
                       >
                         <ArrowUpRight className="size-4 text-muted-foreground" aria-hidden />
                       </ButtonLink>
+                      {isScanActive(scan) && !scan.cancel_requested ? (
+                        <CancelScanDialog scan={scan} onRequested={onChanged} />
+                      ) : null}
                       {!compact && <DeleteScanDialog scan={scan} onDeleted={onChanged} />}
                     </div>
                   </TableCell>

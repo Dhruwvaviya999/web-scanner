@@ -13,8 +13,9 @@ import { ButtonLink } from "@/components/common/button-link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAsyncData } from "@/hooks/use-async-data";
 import { useAuth } from "@/hooks/use-auth";
+import { SCAN_POLL_INTERVAL_MS, usePolling } from "@/hooks/use-polling";
 import { scanService } from "@/services/scan.service";
-import type { Scan, ScanStats } from "@/types/scan";
+import { isScanActive, type Scan, type ScanStats } from "@/types/scan";
 
 const RECENT_SCAN_LIMIT = 5;
 
@@ -34,9 +35,14 @@ export default function DashboardPage() {
     return { stats, recent: list.items };
   }, []);
 
-  const { data, loading, error, reload } = useAsyncData(fetchOverview);
+  const { data, loading, error, reload, refresh } = useAsyncData(fetchOverview);
   const stats = data?.stats ?? null;
   const recent = data?.recent ?? [];
+
+  // Counters and the recent list go stale while a scan is in flight, so they
+  // are re-read on an interval until nothing is running any more.
+  const hasActiveScan = recent.some(isScanActive) || (stats?.running ?? 0) > 0;
+  usePolling(refresh, hasActiveScan ? SCAN_POLL_INTERVAL_MS : null);
 
   return (
     <>
@@ -70,7 +76,7 @@ export default function DashboardPage() {
         />
         <StatCard
           label="In progress"
-          value={(stats?.pending ?? 0) + (stats?.running ?? 0)}
+          value={(stats?.queued ?? 0) + (stats?.running ?? 0)}
           icon={Loader2}
           loading={loading}
           accentClassName="bg-info/15 text-info"

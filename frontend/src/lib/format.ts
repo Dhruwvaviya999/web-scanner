@@ -21,6 +21,31 @@ export function formatDuration(ms: number | null | undefined): string {
   return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(2)} s`;
 }
 
+/** Wall-clock elapsed time, e.g. `0:07`, `1:42`, `1:02:03`. */
+export function formatElapsed(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || seconds < 0) return "—";
+  const whole = Math.floor(seconds);
+  const hours = Math.floor(whole / 3600);
+  const minutes = Math.floor((whole % 3600) / 60);
+  const secs = whole % 60;
+  const padded = `${minutes.toString().padStart(hours ? 2 : 1, "0")}:${secs
+    .toString()
+    .padStart(2, "0")}`;
+  return hours ? `${hours}:${padded}` : padded;
+}
+
+/** Seconds between two ISO timestamps, or from `from` until now. */
+export function elapsedSeconds(
+  from: string | null | undefined,
+  to?: string | null,
+): number | null {
+  const start = toDate(from);
+  if (!start) return null;
+  const end = to ? toDate(to) : new Date();
+  if (!end) return null;
+  return Math.max(0, (end.getTime() - start.getTime()) / 1000);
+}
+
 /** Shorten a URL for table cells without hiding the host. */
 export function truncateUrl(url: string, maxLength = 60): string {
   return url.length <= maxLength ? url : `${url.slice(0, maxLength - 1)}…`;

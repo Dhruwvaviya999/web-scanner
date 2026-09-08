@@ -1,8 +1,24 @@
-"""Scan lifecycle: create, run, list, fetch and delete.
+"""Scan lifecycle: enqueue, execute, cancel, list, fetch and delete.
 
 This module is the only bridge between the isolated `app.scanner` package and
-the database. When the scanner grows a crawler and a findings pipeline, the
-translation from `ScanReport` to ORM rows changes here and nowhere else.
+the database. Two rules shape everything below.
+
+**No transaction spans network work.** A scan issues HTTP requests for as long
+as the target and the budgets allow. Holding a session open across that would
+pin a pooled connection and an idle-in-transaction row lock for the whole run,
+so execution is split into separate units of work:
+
+1. *enqueue* — insert the row as QUEUED and commit (the request's session).
+2. *claim* — a conditional QUEUED -> RUNNING update in its own transaction. A
+   scan that is not QUEUED is not claimed, which is what stops the same scan
+   being executed twice.
+3. *run* — no session at all. Progress writes and cancellation checks each open
+   and close their own short-lived session.
+4. *finish* — one transaction that writes the report, attack surface, findings
+   and summary together, so a scan is never COMPLETED with results missing.
+
+**Every status change goes through the state machine.** `scan_lifecycle`
+decides what is legal; nothing here assigns a status without it.
 """
 
 from __future__ import annotations
@@ -15,7 +31,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.errors import NotFoundError
+from app.core.database import SessionLocal
+from app.core.errors import ConflictError, NotFoundError
 from app.models.scan import Scan, ScanStatus
 from app.models.user import User
 from app.scanner import CrawlConfig, ScannerConfig, ScanReport, WebScanner
@@ -24,11 +41,36 @@ from app.scanner import ActiveScanConfig, ProbeBudgetLimits
 from app.scanner.vulnerabilities.sqli.detector import SqlInjectionDetector
 from app.scanner.vulnerabilities.xss.detector import ReflectedXssDetector
 from app.services import attack_surface_service, finding_service
+from app.services.cancellation import cancellation_token_for
+from app.services.scan_lifecycle import (
+    STAGE_MESSAGE,
+    STAGE_PROGRESS,
+    TERMINAL_STAGE,
+    ScanStage,
+    is_terminal,
+    transition,
+)
 
 logger = logging.getLogger(__name__)
 
 MAX_PAGE_SIZE = 100
 DEFAULT_PAGE_SIZE = 20
+
+#: What the caller is told when a scan ends in an unexpected way. Deliberately
+#: fixed text: the exception is logged with its traceback, but nothing derived
+#: from it reaches a user-visible field, where it could carry a URL, a header,
+#: a query value or an internal path.
+UNEXPECTED_FAILURE_MESSAGE = "The scan stopped unexpectedly and did not complete."
+
+#: Scanner module name -> lifecycle stage. The scanner reports the module it is
+#: entering; translating that into a user-facing stage belongs here, because the
+#: scanner package must not know what a "stage" means to the application.
+MODULE_STAGE: dict[str, ScanStage] = {
+    "http_probe": ScanStage.PROBING,
+    "crawler": ScanStage.CRAWLING,
+    "endpoint_analysis": ScanStage.ANALYZING,
+    "active_scan": ScanStage.ANALYZING,
+}
 
 
 def _scanner_config() -> ScannerConfig:
@@ -68,7 +110,7 @@ def _active_config() -> ActiveScanConfig:
 def _active_detectors() -> list:
     """The active detectors to run, gated by their per-detector enable flags.
 
-    The shared budget and scope come from `_active_config`; this only decides
+    The shared budget and scope come from the active config; this only decides
     which detectors participate. Order is not significant — they share one
     budget and produce deterministic findings independently.
     """
@@ -88,46 +130,268 @@ def _active_detectors() -> list:
     return detectors
 
 
-def create_scan(db: Session, user: User, target_url: str) -> Scan:
-    """Persist a scan, run the probe, then store the outcome.
+# --------------------------------------------------------------------------- #
+# Creating and running a scan
+# --------------------------------------------------------------------------- #
 
-    Phase 1 runs the probe inline: the request returns once the scan has
-    finished. The PENDING -> RUNNING -> COMPLETED/FAILED transitions are already
-    modelled so that moving execution to a background worker later is a change
-    of caller, not of schema.
+
+class _StageTracker:
+    """Persists coarse progress as the scanner moves between modules.
+
+    Each write is its own short transaction — the scan holds no session while it
+    works — and is conditional on the scan still being RUNNING, so a progress
+    update can never resurrect a scan that has already stopped.
     """
-    scan = Scan(user_id=user.id, target_url=target_url, status=ScanStatus.PENDING)
+
+    __slots__ = ("_scan_id", "current")
+
+    def __init__(self, scan_id: uuid.UUID) -> None:
+        self._scan_id = scan_id
+        self.current: ScanStage = ScanStage.INITIALIZING
+
+    def enter_module(self, module_name: str) -> None:
+        """Callback handed to the scanner; called as each module begins."""
+        stage = MODULE_STAGE.get(module_name)
+        if stage is None or stage is self.current:
+            return
+        self.set(stage)
+
+    def set(self, stage: ScanStage) -> None:
+        self.current = stage
+        try:
+            with SessionLocal.begin() as db:
+                scan = db.get(Scan, self._scan_id)
+                if scan is None or scan.status is not ScanStatus.RUNNING:
+                    return
+                _set_stage(scan, stage)
+        except Exception:  # noqa: BLE001 - progress is cosmetic, never fatal
+            logger.debug(
+                "Could not record stage %s for scan %s", stage.value, self._scan_id
+            )
+
+
+def create_scan(db: Session, user: User, target_url: str) -> Scan:
+    """Queue a scan, run it, and return the finished row.
+
+    Execution is still inline — the request returns once the scan has stopped —
+    but the request's session is committed and left alone for the duration, so
+    moving `execute_scan` onto a worker later is a change of caller only.
+    """
+    scan_id = enqueue_scan(db, user, target_url)
+    return execute_scan(scan_id)
+
+
+def enqueue_scan(db: Session, user: User, target_url: str) -> uuid.UUID:
+    """Unit of work 1: record the scan as QUEUED and commit.
+
+    Returns the id rather than the instance: everything after this point uses
+    its own session, and passing an id makes it impossible to keep using the
+    request's session by accident while the scan runs.
+    """
+    scan = Scan(
+        user_id=user.id,
+        target_url=target_url,
+        status=ScanStatus.QUEUED,
+        queued_at=datetime.now(UTC),
+        current_stage=ScanStage.QUEUED.value,
+        progress_percent=STAGE_PROGRESS[ScanStage.QUEUED],
+        progress_message=STAGE_MESSAGE[ScanStage.QUEUED],
+    )
     db.add(scan)
     db.commit()
     db.refresh(scan)
+    return scan.id
 
-    scan.status = ScanStatus.RUNNING
-    scan.started_at = datetime.now(UTC)
-    db.commit()
 
-    report = WebScanner(
-        _scanner_config(),
-        crawl_config=_crawl_config(),
-        active_config=_active_config(),
-        detectors=_active_detectors(),
-    ).scan_sync(target_url)
-    _apply_report(scan, report)
+def execute_scan(scan_id: uuid.UUID) -> Scan:
+    """Run a queued scan to a terminal state and return the resulting row.
 
-    # Findings are written in the same transaction as the scan result, so a
-    # scan is never left COMPLETED with its findings missing.
-    # Order matters: endpoints must exist and be flushed before findings can be
-    # linked to them, and the analysis outcome is recorded onto those same rows.
-    endpoints_by_url = attack_surface_service.replace_attack_surface(db, scan, report.crawl)
-    attack_surface_service.apply_analysis(db, endpoints_by_url, report.analysis)
+    Holds no session while the scanner works. Every failure path ends in a
+    terminal status: a scan is never left RUNNING because something raised.
+    """
+    target_url = _claim(scan_id)
+    if target_url is None:
+        # Not ours to run: already claimed, or cancelled before it started.
+        return _load(scan_id)
 
-    aggregated = report.analysis.findings if report.analysis else []
-    finding_service.replace_findings(db, scan, aggregated, endpoints_by_url)
-    _apply_summary(scan, report)
+    stage = _StageTracker(scan_id)
+    try:
+        report = WebScanner(
+            _scanner_config(),
+            crawl_config=_crawl_config(),
+            active_config=_active_config(),
+            detectors=_active_detectors(),
+            cancellation=cancellation_token_for(scan_id),
+            on_module_start=stage.enter_module,
+        ).scan_sync(target_url)
+    except Exception:  # noqa: BLE001 - the scan must not be left RUNNING
+        logger.exception("Scan %s raised while running", scan_id)
+        _mark_failed(scan_id, stage.current)
+        return _load(scan_id)
 
+    try:
+        return _finish(scan_id, report, stage)
+    except Exception:  # noqa: BLE001 - persistence failed; the row must settle
+        logger.exception("Scan %s raised while storing its result", scan_id)
+        _mark_failed(scan_id, ScanStage.FINALIZING)
+        return _load(scan_id)
+
+
+def _claim(scan_id: uuid.UUID) -> str | None:
+    """Unit of work 2: QUEUED -> RUNNING, atomically. Returns the target URL.
+
+    The row is locked for the length of this short transaction — no network work
+    happens inside it — so two callers cannot both observe QUEUED and both start
+    the same scan. `None` means the scan was not claimable.
+    """
+    with SessionLocal.begin() as db:
+        scan = db.scalar(select(Scan).where(Scan.id == scan_id).with_for_update())
+        if scan is None:
+            raise NotFoundError("Scan not found.", code="scan_not_found")
+        if scan.status is not ScanStatus.QUEUED:
+            logger.info(
+                "Scan %s not claimed: status is already %s", scan_id, scan.status.value
+            )
+            return None
+
+        scan.status = transition(scan.status, ScanStatus.RUNNING)
+        scan.started_at = datetime.now(UTC)
+        _set_stage(scan, ScanStage.INITIALIZING)
+        return scan.target_url
+
+
+def _finish(scan_id: uuid.UUID, report: ScanReport, stage: _StageTracker) -> Scan:
+    """Unit of work 4: write outcome, surface, findings and summary at once.
+
+    One transaction, so a scan is never visible as COMPLETED while its findings
+    are still missing.
+    """
+    with SessionLocal.begin() as db:
+        scan = db.get(Scan, scan_id)
+        if scan is None:
+            raise NotFoundError("Scan not found.", code="scan_not_found")
+
+        _apply_probe(scan, report)
+
+        # Order matters: endpoints must exist and be flushed before findings can
+        # be linked to them, and the analysis outcome is recorded on those rows.
+        endpoints_by_url = attack_surface_service.replace_attack_surface(db, scan, report.crawl)
+        attack_surface_service.apply_analysis(db, endpoints_by_url, report.analysis)
+
+        aggregated = report.analysis.findings if report.analysis else []
+        finding_service.replace_findings(db, scan, aggregated, endpoints_by_url)
+        _apply_summary(scan, report)
+
+        _finalize(scan, _outcome_of(report), report=report, failure_stage=stage.current)
+        db.flush()
+        db.refresh(scan)
+        return scan
+
+
+def _mark_failed(scan_id: uuid.UUID, stage: ScanStage | None) -> None:
+    """Best-effort: settle a scan that raised, in a session of its own.
+
+    Its own transaction, because the one that raised cannot be trusted and a
+    rollback there would not undo the already-committed RUNNING status. Nothing
+    derived from the exception is written to the row.
+    """
+    try:
+        with SessionLocal.begin() as db:
+            scan = db.get(Scan, scan_id)
+            if scan is None or is_terminal(scan.status):
+                return
+            _finalize(
+                scan,
+                ScanStatus.FAILED,
+                error_message=UNEXPECTED_FAILURE_MESSAGE,
+                failure_stage=stage,
+            )
+    except Exception:  # noqa: BLE001 - nothing further can be done here
+        logger.exception("Could not mark scan %s as failed", scan_id)
+
+
+def _load(scan_id: uuid.UUID) -> Scan:
+    """Re-read a scan in its own session, for returning to the caller."""
+    with SessionLocal() as db:
+        scan = db.get(Scan, scan_id)
+        if scan is None:
+            raise NotFoundError("Scan not found.", code="scan_not_found")
+        return scan
+
+
+def _set_stage(scan: Scan, stage: ScanStage) -> None:
+    scan.current_stage = stage.value
+    scan.progress_percent = STAGE_PROGRESS[stage]
+    scan.progress_message = STAGE_MESSAGE[stage]
+
+
+def _outcome_of(report: ScanReport) -> ScanStatus:
+    """Which terminal status a finished run corresponds to.
+
+    Cancellation is checked first and is not a failure: the run stopped because
+    it was asked to, and whatever it gathered before stopping is valid.
+    """
+    if report.cancelled:
+        return ScanStatus.CANCELLED
+    if report.succeeded and report.probe is not None:
+        return ScanStatus.COMPLETED
+    return ScanStatus.FAILED
+
+
+def _finalize(
+    scan: Scan,
+    status: ScanStatus,
+    *,
+    report: ScanReport | None = None,
+    error_message: str | None = None,
+    failure_stage: ScanStage | None = None,
+) -> None:
+    """Move a scan to a terminal state. The only place a scan ever ends."""
+    scan.status = transition(scan.status, status)
+    stage = TERMINAL_STAGE[status]
+    _set_stage(scan, stage)
     scan.completed_at = datetime.now(UTC)
-    db.commit()
-    db.refresh(scan)
-    return scan
+
+    if status is ScanStatus.FAILED:
+        message = error_message
+        if message is None and report is not None:
+            message = report.error_message
+        scan.error_message = message or "The scan failed."
+        scan.failure_stage = failure_stage.value if failure_stage else None
+        logger.info(
+            "Scan %s failed at %s: %s",
+            scan.id,
+            scan.failure_stage or "unknown",
+            scan.error_message,
+        )
+        return
+
+    # A scan that finished, or was stopped on request, carries no error text.
+    scan.error_message = None
+    scan.failure_stage = None
+    if status is ScanStatus.CANCELLED and scan.cancelled_at is None:
+        scan.cancelled_at = scan.completed_at
+
+
+def _apply_probe(scan: Scan, report: ScanReport) -> None:
+    """Copy whatever the HTTP probe established onto the scan row.
+
+    Written for a cancelled run too: partial results are kept, and the status —
+    set separately by `_finalize` — is what says the run did not finish.
+    """
+    if report.probe is not None:
+        probe = report.probe
+        scan.http_status_code = probe.http_status_code
+        scan.response_time_ms = probe.response_time_ms
+        scan.final_url = probe.final_url
+        scan.content_type = probe.content_type
+        scan.server_header = probe.server_header
+        scan.is_https = probe.is_https
+        scan.redirect_count = probe.redirect_count
+        scan.page_title = probe.page_title
+        scan.content_length = probe.content_length
+    elif report.target is not None:
+        scan.is_https = report.target.is_https
 
 
 def _apply_summary(scan: Scan, report: ScanReport) -> None:
@@ -136,7 +400,8 @@ def _apply_summary(scan: Scan, report: ScanReport) -> None:
     Deterministic: every number is derived from what the pipeline produced in
     this run, never from a previous scan or a heuristic. Counters stay NULL when
     the corresponding stage did not run, so "not attempted" remains
-    distinguishable from "attempted and found nothing".
+    distinguishable from "attempted and found nothing" — and a cancelled scan
+    keeps whatever it did reach, which is how partial coverage stays visible.
     """
     if report.crawl is not None:
         scan.endpoints_discovered = len(report.crawl.endpoints)
@@ -163,33 +428,51 @@ def _apply_summary(scan: Scan, report: ScanReport) -> None:
         scan.info_count = counts[FindingSeverity.INFO]
 
 
-def _apply_report(scan: Scan, report: ScanReport) -> None:
-    """Copy a scanner report onto the scan row."""
-    if report.succeeded and report.probe is not None:
-        probe = report.probe
-        scan.status = ScanStatus.COMPLETED
-        scan.http_status_code = probe.http_status_code
-        scan.response_time_ms = probe.response_time_ms
-        scan.final_url = probe.final_url
-        scan.content_type = probe.content_type
-        scan.server_header = probe.server_header
-        scan.is_https = probe.is_https
-        scan.redirect_count = probe.redirect_count
-        scan.page_title = probe.page_title
-        scan.content_length = probe.content_length
-        scan.error_message = None
-        return
+# --------------------------------------------------------------------------- #
+# Cancellation
+# --------------------------------------------------------------------------- #
 
-    scan.status = ScanStatus.FAILED
-    scan.error_message = report.error_message or "The scan failed."
-    if report.target is not None:
-        scan.is_https = report.target.is_https
-    logger.info(
-        "Scan %s failed: code=%s message=%s",
-        scan.id,
-        report.error_code.value if report.error_code else "unknown",
-        scan.error_message,
-    )
+
+def cancel_scan(db: Session, user: User, scan_id: uuid.UUID) -> Scan:
+    """Ask a scan to stop. Cooperative — nothing is killed.
+
+    A QUEUED scan has not started, so it is cancelled outright. A RUNNING scan
+    is only *asked*: the flag is set, and the run observes it at its next safe
+    boundary and finalises itself. The row returned is the row as it actually
+    is, so a caller is never told a running scan has already stopped.
+
+    Idempotent for a scan that is already cancelled. Cancelling a scan that
+    finished is a conflict rather than a no-op: reporting success there would
+    let a completed scan be presented as cancelled.
+    """
+    scan = get_scan(db, user, scan_id)
+
+    if scan.status is ScanStatus.CANCELLED:
+        return scan
+    if is_terminal(scan.status):
+        raise ConflictError(
+            f"A {scan.status.value.lower()} scan cannot be cancelled.",
+            code="invalid_scan_transition",
+        )
+
+    now = datetime.now(UTC)
+    scan.cancel_requested = True
+    scan.cancelled_at = scan.cancelled_at or now
+
+    if scan.status is ScanStatus.QUEUED:
+        # Nothing is running, so there is nobody to observe the flag.
+        _finalize(scan, ScanStatus.CANCELLED)
+    else:
+        scan.progress_message = "Stopping the scan."
+
+    db.commit()
+    db.refresh(scan)
+    return scan
+
+
+# --------------------------------------------------------------------------- #
+# Reading
+# --------------------------------------------------------------------------- #
 
 
 def list_scans(

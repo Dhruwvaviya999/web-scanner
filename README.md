@@ -299,7 +299,7 @@ Always change the schema through a migration; never edit the database by hand.
 
 ```bash
 cd backend
-.venv\Scripts\python -m pytest          # 357 tests
+.venv\Scripts\python -m pytest          # 405 tests
 ```
 
 | Suite | Covers |
@@ -322,6 +322,7 @@ cd backend
 | `test_reporting.py` | Report construction, coverage, determinism, authorization, leakage |
 | `test_findings_api.py` | Findings API ownership and isolation |
 | `test_attack_surface_api.py` | Endpoint/form API ownership and isolation |
+| `test_scan_lifecycle.py` | State machine, cancellation, progress, failure isolation |
 
 The detector and crawler suites need no network: the crawler's page fetcher is injected, so
 limits, cycles and failure handling are deterministic. The API suites drive the real app through
@@ -1132,6 +1133,160 @@ confidence) with expandable detail. "Download JSON" saves the canonical document
 
 ---
 
+## Scan execution lifecycle (Phase 10)
+
+Phase 10 adds no detector. It makes the *running* of a scan a first-class thing: an explicit
+state machine, cooperative cancellation, honest progress, and a guarantee that a scan always
+reaches a terminal state.
+
+### States
+
+```
+QUEUED  -->  RUNNING  -->  COMPLETED
+   |            |------->  FAILED
+   |            \------->  CANCELLED
+   |--------------------->  FAILED
+   \--------------------->  CANCELLED
+```
+
+`COMPLETED`, `FAILED` and `CANCELLED` are terminal and have no outgoing edges: once a scan stops
+it stays stopped. Every status change goes through `services/scan_lifecycle.py::transition`,
+which raises `409 invalid_scan_transition` for anything illegal, so a finished scan cannot be
+restarted and a completed scan cannot be relabelled as cancelled.
+
+`PENDING` was renamed to `QUEUED` in migration `0008` so the database and the state machine share
+one vocabulary. `CANCELLED` was added to the same enum.
+
+### Units of work: no transaction spans network I/O
+
+A scan issues HTTP requests for as long as the target and the budgets allow. Holding a session
+open across that would pin a pooled connection and an idle-in-transaction row lock for the entire
+run. `create_scan` is therefore split:
+
+| Step | Session | What it does |
+| ---- | ------- | ------------ |
+| `enqueue_scan` | the request's | INSERT the row as `QUEUED`, commit |
+| `_claim` | its own, short | `SELECT ... FOR UPDATE`, `QUEUED -> RUNNING`, commit |
+| the scan itself | **none** | crawl, analyse, probe |
+| `_finish` | its own | report, attack surface, findings and summary in one transaction |
+| `_mark_failed` | its own, fresh | only when something raised |
+
+The claim is conditional: a scan that is not `QUEUED` is not claimed, which is what stops the
+same scan being executed twice. `_finish` writes everything in a single transaction, so a scan is
+never visible as `COMPLETED` with its findings missing.
+
+Any exception between the `RUNNING` commit and the final commit is caught and settled as
+`FAILED`. A rollback could not have fixed this - the `RUNNING` status was already committed - so
+the failure path opens a *new* session and closes the scan out. A scan cannot be left `RUNNING`
+forever because something raised.
+
+### Cancellation is cooperative
+
+Nothing is killed. No thread is interrupted, no process is terminated, no task is force-cancelled.
+
+`POST /api/scans/{scan_id}/cancel` sets a flag. The running scan reads that flag at safe
+boundaries and stops itself:
+
+| Boundary | Why there |
+| -------- | --------- |
+| between pipeline modules | nothing is in flight and the report is consistent |
+| before each crawler fetch | guarantees no new traffic reaches the target |
+| before each analysed endpoint | every endpoint is either fully assessed or untouched |
+| before each probe target | between detectors, not inside one |
+| inside `ProbeEngine.send`, before the budget is spent | no probe escapes mid-detector |
+
+The scanner never learns *how* the flag is stored. `scanner/cancellation.py` holds a pure
+`CancellationToken` built from a plain predicate; `services/cancellation.py` supplies a predicate
+that reads the database. That keeps the scanner package free of `app.models`, as in every earlier
+phase.
+
+The database-backed token opens **its own short-lived session** per check - a running scan must
+not read the flag through a session it also holds for writes - and throttles reads to one every
+1.5 seconds, so the query count stays proportional to elapsed time rather than to pages crawled.
+Once cancellation is seen the token latches. A cancellation check that *fails* returns "not
+cancelled": a broken check must never end a scan that nobody asked to stop.
+
+### A cancelled scan is not a failed scan, and not a clean one
+
+Cancellation is a normal outcome. A cancelled scan carries no `error_message` and no
+`failure_stage`, and it keeps everything it gathered: the probe result, the pages crawled before
+the stop, the endpoints analysed, the findings already aggregated. The crawler records what was
+still queued as `CANCELLED` skips, so the gap in coverage is visible rather than silent.
+
+It is also never presented as a pass. `report.metadata.is_conclusive` is true only for a scan
+that ran to completion, and `coverage.scan_completed` false forces `coverage.is_complete` false
+regardless of what the counters say - a scan cancelled just after analysing everything it had
+discovered still did not finish looking. The results page says so in words, too.
+
+### Progress is coarse and honest
+
+The crawler discovers its own workload as it goes, so no true percentage exists. The scan
+reports a **stage**, and the percentage attached to it is an explicitly indicative milestone:
+
+| Stage | Indicative | Meaning |
+| ----- | ---------: | ------- |
+| `QUEUED` | 0 | Created, not started |
+| `INITIALIZING` | 5 | Claimed, about to run |
+| `PROBING` | 15 | Fetching the target |
+| `CRAWLING` | 40 | Discovering pages and inputs |
+| `ANALYZING` | 70 | Analysing endpoints and running detectors |
+| `AGGREGATING` | 85 | Grouping findings |
+| `FINALIZING` | 95 | Saving results |
+| `COMPLETED` / `FAILED` / `CANCELLED` | 100 | Terminal |
+
+Stage writes go through their own short transaction and are conditional on the scan still being
+`RUNNING`, so a progress update can never resurrect a scan that has already stopped. The stage is
+a validated string rather than a native enum: stages are presentation detail and will change more
+often than the status set, and `ALTER TYPE` per stage is friction for no gain.
+
+### Failure detail never leaks internals
+
+A scan that fails unexpectedly stores a fixed message and the stage it was in. The exception is
+logged with its traceback server-side; nothing derived from it reaches a user-visible field,
+where it could carry a connection string, a header, a token or an internal path. `failure_stage`
+is safe by construction: it is a name from a fixed vocabulary.
+
+### Frontend
+
+* Plain polling every 3 seconds - no WebSocket, no SSE - and only while something on the page can
+  still change. Once every scan shown is terminal the interval stops entirely. Ticks are skipped
+  while the tab is hidden.
+* The polling refetch is silent, so a live scan updates in place instead of flashing skeletons.
+* A stop button on running scans, with a confirmation that says results will be partial.
+* The badge reads **Stopping...** between the request and the scan actually stopping. The UI never
+  claims a cancellation the backend has not confirmed.
+* Live elapsed time, the current stage, and an indicative progress bar labelled as such.
+* `CANCELLED` has its own colour, distinct from both success and failure, everywhere it appears.
+
+### API
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| POST | `/api/scans/{scan_id}/cancel` | Ask a scan to stop |
+
+Owner-only: another user's scan id returns `404`, never `403`. Cancelling a queued scan stops it
+outright and returns `CANCELLED`. Cancelling a running scan returns the row **as it is** -
+`RUNNING` with `cancel_requested` true - because the stop has not happened yet. Cancelling an
+already-cancelled scan succeeds; cancelling a scan that finished returns `409`.
+
+### Single-process execution
+
+Scans still run inline in the request that created them, inside FastAPI's threadpool. This phase
+deliberately added no Redis, no Celery, no queue and no worker service. The consequences are:
+
+* `POST /api/scans` blocks for the duration of the scan, bounded by
+  `SCANNER_TOTAL_TIMEOUT_SECONDS`.
+* Cancellation must come from a *different* request - which works, because the scan holds no
+  session or row lock while it runs.
+* A process restart mid-scan leaves that scan `RUNNING` in the database with nothing to finish
+  it. There is no reaper; it would need one, or a worker, to be corrected automatically.
+* Throughput is bounded by the threadpool, not by any scheduler.
+
+The unit-of-work split above is what makes moving execution onto a worker later a change of
+caller rather than a change of schema.
+
+---
+
 ## API overview
 
 All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
@@ -1175,6 +1330,7 @@ All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
 | GET    | `/api/scans/{scan_id}/forms` | yes | Forms found on crawled pages, with their fields |
 | GET    | `/api/scans/{scan_id}/report` | yes | Canonical security report for one scan |
 | GET    | `/api/scans/{scan_id}/report/json` | yes | The same report as a JSON download |
+| POST   | `/api/scans/{scan_id}/cancel` | yes | Ask a queued or running scan to stop |
 | DELETE | `/api/scans/{scan_id}` | yes | Delete one scan |
 
 ### System
@@ -1240,6 +1396,14 @@ the server and mirrored by Zod in the browser; the server is authoritative.
 
 * **No vulnerability testing.** A scan is one HTTP request. Security headers and cookies on that
   response are assessed; nothing is probed, and no payload is ever sent.
+* **Scans run in the API process.** There is no queue and no worker: `POST /api/scans` blocks
+  until the scan stops, and a process restart mid-scan leaves that scan `RUNNING` with nothing to
+  finish it. Nothing reaps such a row automatically.
+* **Cancellation is cooperative, so it is not instant.** A stop takes effect at the next safe
+  boundary - up to the 1.5 s cancellation-poll interval, plus however long the request already in
+  flight takes to return. Nothing is killed mid-request.
+* **Progress is a stage, not a measurement.** The crawler discovers its own workload, so the
+  percentage attached to each stage is an indicative milestone and nothing more.
 * **Findings are configuration observations.** Their absence does not mean a site is secure — it
   means these particular checks found nothing on one response.
 * **Cookie classification is name-based.** A session cookie with an unusual name will not be
@@ -1316,10 +1480,11 @@ Planned, in order. Everything from Phase 3 onward is unimplemented.
 | 6 | Reflected XSS detection on query parameters | done |
 | 7 | Reusable active-probe framework; XSS migrated onto it | done |
 | 8 | Conservative SQL-injection detection (error-based + boolean) | done |
-| 9 | Reporting layer: canonical report, API, results page, JSON export | **done - current release** |
-| 10 | TLS inspection, CORS policy, risk scoring | planned |
-| 11 | Further active testing: open redirect, API security checks | planned |
-| 12 | Additional export formats (PDF, SARIF), background execution | planned |
+| 9 | Reporting layer: canonical report, API, results page, JSON export | done |
+| 10 | Scan execution lifecycle: state machine, cancellation, progress | **done - current release** |
+| 11 | TLS inspection, CORS policy, risk scoring | planned |
+| 12 | Further active testing: open redirect, API security checks | planned |
+| 13 | Additional export formats (PDF, SARIF), background execution | planned |
 
 The attack surface discovered in Phase 4 is what later detectors will consume: endpoints and
 their parameters are the injection points an XSS or SQL-injection check needs, and forms are

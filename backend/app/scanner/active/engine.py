@@ -25,6 +25,7 @@ import logging
 from urllib.parse import urlsplit
 
 from app.scanner.active.budget import ProbeBudget
+from app.scanner.cancellation import CancellationToken
 from app.scanner.active.requests import build_probe_url
 from app.scanner.active.types import (
     ActiveScanStats,
@@ -49,11 +50,13 @@ class ProbeEngine:
         origin: Origin,
         budget: ProbeBudget,
         stats: ActiveScanStats | None = None,
+        cancellation: CancellationToken | None = None,
     ) -> None:
         self._fetcher = fetcher
         self._origin = origin
         self._budget = budget
         self.stats = stats or ActiveScanStats()
+        self._cancellation = cancellation or CancellationToken.none()
 
     @property
     def budget(self) -> ProbeBudget:
@@ -66,6 +69,10 @@ class ProbeEngine:
     async def send(self, request: ProbeRequest) -> ProbeOutcome:
         """Send one probe. Never raises."""
         endpoint = request.target.url
+
+        # --- cancellation: no new traffic once the scan is stopped -------- #
+        # Checked before the budget so a cancelled scan spends nothing further.
+        self._cancellation.raise_if_cancelled("ANALYZING")
 
         # --- budget: fail closed ------------------------------------------ #
         if not self._budget.reserve(endpoint, request.parameter):

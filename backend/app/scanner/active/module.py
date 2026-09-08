@@ -27,6 +27,7 @@ from app.scanner.active.types import (
     ProbeTarget,
 )
 from app.scanner.analysis.aggregator import aggregate_findings
+from app.scanner.cancellation import CancellationToken, ScanCancelled
 from app.scanner.crawler.url_normalizer import is_same_origin, origin_of
 from app.scanner.http_scanner import HttpFetcher, build_client
 from app.scanner.types import ScannerConfig, ScanReport, ScanTarget
@@ -54,10 +55,12 @@ class ActiveScanModule:
         config: ScannerConfig,
         active_config: ActiveScanConfig,
         detectors: Sequence[ActiveDetector],
+        cancellation: CancellationToken | None = None,
     ) -> None:
         self._config = config
         self._active_config = active_config
         self._detectors = list(detectors)
+        self._cancellation = cancellation or CancellationToken.none()
 
     async def run(self, target: ScanTarget, report: ScanReport) -> None:
         if not self._active_config.enabled or not self._detectors:
@@ -78,6 +81,8 @@ class ActiveScanModule:
         stats = ActiveScanStats()
         observations: list[DetectorObservation] = []
 
+        cancelled = False
+
         async with build_client(self._config) as client:
             fetcher = HttpFetcher(
                 self._config,
@@ -86,24 +91,38 @@ class ActiveScanModule:
                 allow_url=lambda url: is_same_origin(url, origin),
                 max_redirects=self._config.max_redirects,
             )
-            engine = ProbeEngine(fetcher, origin, budget, stats)
+            engine = ProbeEngine(fetcher, origin, budget, stats, self._cancellation)
 
             for probe_target in targets:
+                # Between targets. The engine additionally refuses to send once
+                # cancellation is observed, so no probe escapes mid-detector.
+                if self._cancellation.cancelled:
+                    cancelled = True
+                    break
+
                 stats.targets_considered += 1
                 if budget.exhausted():
                     stats.budget_exhausted = True
                     break
-                observations.extend(await self._run_detectors(probe_target, engine))
+                try:
+                    observations.extend(await self._run_detectors(probe_target, engine))
+                except ScanCancelled:
+                    # Raised by the engine mid-detector. Whatever earlier targets
+                    # produced is already in `observations` and is kept.
+                    cancelled = True
+                    break
 
         _record_metadata(report, stats, budget)
 
-        if not observations or report.analysis is None:
-            return
+        if observations and report.analysis is not None:
+            # Merge into the phase-5 aggregation so active findings deduplicate,
+            # associate with endpoints and reach the summary like any other
+            # finding.
+            report.analysis.observations.extend(observations)
+            report.analysis.findings = aggregate_findings(report.analysis.observations)
 
-        # Merge into the phase-5 aggregation so active findings deduplicate,
-        # associate with endpoints and reach the summary like any other finding.
-        report.analysis.observations.extend(observations)
-        report.analysis.findings = aggregate_findings(report.analysis.observations)
+        if cancelled:
+            raise ScanCancelled("ANALYZING")
 
     async def _run_detectors(
         self, target: ProbeTarget, engine: ProbeEngine
@@ -120,6 +139,10 @@ class ActiveScanModule:
             engine.stats.targets_probed += 1
             try:
                 found.extend(await detector.probe(target, engine))
+            except ScanCancelled:
+                # Not a detector fault. Re-raised so the stop is not mistaken
+                # for a failure and swallowed by the guard below.
+                raise
             except Exception:  # noqa: BLE001 - one detector must not end the scan
                 engine.stats.failures += 1
                 engine.stats.note(f"detector_error:{detector.name}")

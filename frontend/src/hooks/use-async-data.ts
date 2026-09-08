@@ -10,6 +10,11 @@ export interface AsyncData<T> {
   error: string | null;
   /** Re-run the fetcher, e.g. after creating or deleting a record. */
   reload: () => void;
+  /**
+   * Re-run the fetcher without showing the loading state. Used by polling, so
+   * a live scan updates in place instead of flashing skeletons every tick.
+   */
+  refresh: () => void;
   /** Replace the cached value without a round trip. */
   setData: (value: T) => void;
 }
@@ -50,10 +55,14 @@ export function useAsyncData<T>(fetcher: () => Promise<T>): AsyncData<T> {
     };
   }, [fetcher, reloadToken]);
 
+  const refresh = useCallback(() => {
+    setReloadToken((token) => token + 1);
+  }, []);
+
   const reload = useCallback(() => {
     setLoading(true);
     setReloadToken((token) => token + 1);
   }, []);
 
-  return { data, loading, error, reload, setData };
+  return { data, loading, error, reload, refresh, setData };
 }

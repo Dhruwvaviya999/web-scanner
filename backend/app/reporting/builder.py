@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 
 from app.models.attack_surface import Endpoint, Form
 from app.models.finding import Finding
-from app.models.scan import Scan
+from app.models.scan import Scan, ScanStatus
 from app.reporting.types import (
     AttackSurfaceSummary,
     CategoryGroup,
@@ -77,6 +77,8 @@ def _metadata(scan: Scan, generated_at: datetime) -> ReportMetadata:
         duration_seconds=duration,
         generated_at=generated_at,
         error_message=scan.error_message,
+        cancelled_at=scan.cancelled_at,
+        failure_stage=scan.failure_stage,
     )
 
 
@@ -92,6 +94,7 @@ def _coverage(scan: Scan) -> CoverageSummary:
         pages_skipped=scan.pages_skipped,
         max_depth_reached=scan.max_depth_reached,
         crawl_limit_reached=scan.crawl_limit_reached,
+        scan_completed=scan.status is ScanStatus.COMPLETED,
     )
 
 

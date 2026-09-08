@@ -41,10 +41,30 @@ class ScanRead(BaseModel):
     id: uuid.UUID
     target_url: str
     status: ScanStatus
+    queued_at: datetime | None
     started_at: datetime | None
     completed_at: datetime | None
+    cancelled_at: datetime | None = Field(
+        default=None,
+        description="When cancellation was requested, not when the run wound down.",
+    )
     created_at: datetime
     updated_at: datetime
+
+    # --- Progress. Coarse by design: the crawler discovers its own workload, so
+    # a precise percentage cannot be justified and is not invented here.
+    current_stage: str | None = Field(
+        default=None, description="Lifecycle stage, e.g. CRAWLING. Null before a scan starts."
+    )
+    progress_percent: int | None = Field(
+        default=None, description="Indicative only — a stage milestone, not a measurement."
+    )
+    progress_message: str | None = None
+    #: True once the owner has asked the scan to stop. The scan is still RUNNING
+    #: until it observes the request; the status is what says it has stopped.
+    cancel_requested: bool = False
+    #: Which stage a failed scan was in. A stage name only, never a trace.
+    failure_stage: str | None = None
 
     http_status_code: int | None
     response_time_ms: int | None
@@ -89,10 +109,15 @@ class ScanListResponse(BaseModel):
 
 
 class ScanStats(BaseModel):
-    """Counters backing the dashboard summary cards."""
+    """Counters backing the dashboard summary cards.
+
+    One field per `ScanStatus`, so a new state cannot be silently dropped from
+    the dashboard — `get_scan_stats` keys its result off the same enum.
+    """
 
     total: int
-    pending: int
+    queued: int
     running: int
     completed: int
     failed: int
+    cancelled: int

@@ -64,6 +64,17 @@ export const scanService = {
     return `${API_BASE_URL}/api/scans/${id}/report/json`;
   },
 
+  /**
+   * Asks a scan to stop. Cooperative: a running scan is only *requested* to
+   * stop, so the returned row may still be RUNNING with `cancel_requested`
+   * true. Never present that as a completed cancellation — poll until the
+   * status itself becomes terminal.
+   */
+  async cancel(id: string): Promise<Scan> {
+    const { data } = await apiClient.post<Scan>(`/scans/${id}/cancel`);
+    return data;
+  },
+
   async remove(id: string): Promise<void> {
     await apiClient.delete(`/scans/${id}`);
   },

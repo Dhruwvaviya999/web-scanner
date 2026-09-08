@@ -19,6 +19,7 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 
+from app.scanner.cancellation import CancellationToken, ScanCancelled
 from app.scanner.crawler.html_parser import decode_html, extract_forms, extract_links
 from app.scanner.crawler.types import (
     CrawlConfig,
@@ -49,9 +50,15 @@ _TITLE_LIMIT = 512
 class Crawler:
     """Walks one origin breadth-first within the configured bounds."""
 
-    def __init__(self, config: CrawlConfig, fetch: PageFetcher) -> None:
+    def __init__(
+        self,
+        config: CrawlConfig,
+        fetch: PageFetcher,
+        cancellation: CancellationToken | None = None,
+    ) -> None:
         self._config = config
         self._fetch = fetch
+        self._cancellation = cancellation or CancellationToken.none()
 
     async def crawl(self, seed_url: str) -> CrawlResult:
         result = CrawlResult()
@@ -69,6 +76,27 @@ class Crawler:
         queue: deque[tuple[str, int]] = deque([(seed, 0)])
         visited.add(canonical_url(seed))
 
+        try:
+            await self._walk(queue, visited, origin, result, started)
+        except ScanCancelled:
+            # Stopping is not failing. Everything crawled so far is returned;
+            # what was still queued is recorded as skipped, so the coverage
+            # numbers show plainly that the crawl did not finish.
+            result.cancelled = True
+            self._drain(queue, result, SkipReason.CANCELLED)
+            logger.info("Crawl stopped: the scan was cancelled")
+
+        return result
+
+    async def _walk(
+        self,
+        queue: "deque[tuple[str, int]]",
+        visited: set[str],
+        origin: Origin,
+        result: CrawlResult,
+        started: float,
+    ) -> None:
+        """The crawl loop itself. Raises `ScanCancelled` when told to stop."""
         while queue:
             if result.pages_crawled >= self._config.max_pages:
                 result.limit_reached = True
@@ -80,6 +108,11 @@ class Crawler:
                 logger.info("Crawl stopped: time budget of %.0fs reached", self._config.time_budget_seconds)
                 self._drain(queue, result, SkipReason.TIME_BUDGET)
                 break
+
+            # Before issuing another request: the strongest boundary in the
+            # crawl, since it guarantees no new traffic reaches the target once
+            # cancellation is observed.
+            self._cancellation.raise_if_cancelled("CRAWLING")
 
             url, depth = queue.popleft()
             page = await self._fetch(url)
@@ -111,8 +144,6 @@ class Crawler:
                 continue
 
             self._enqueue_links(html, page.url, origin, visited, queue, depth, result)
-
-        return result
 
     # ------------------------------------------------------------------ #
 

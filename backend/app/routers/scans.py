@@ -21,7 +21,11 @@ from app.schemas.attack_surface import (
     FormListResponse,
     FormRead,
 )
-from app.schemas.common import NOT_FOUND_RESPONSE, UNAUTHORIZED_RESPONSE
+from app.schemas.common import (
+    CONFLICT_RESPONSE,
+    NOT_FOUND_RESPONSE,
+    UNAUTHORIZED_RESPONSE,
+)
 from app.schemas.report import ScanReportRead
 from app.schemas.finding import FindingListResponse, FindingRead, FindingSummary
 from app.schemas.scan import ScanCreate, ScanListResponse, ScanRead, ScanStats
@@ -196,6 +200,28 @@ def download_scan_report(
             "Content-Disposition": f'attachment; filename="scan-{scan_id}-report.json"'
         },
     )
+
+
+@router.post(
+    "/{scan_id}/cancel",
+    response_model=ScanRead,
+    summary="Ask a running scan to stop",
+    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def cancel_scan(scan_id: uuid.UUID, current_user: CurrentUser, db: DbSession) -> ScanRead:
+    """Request cancellation of a scan the caller owns.
+
+    Cancellation is cooperative: nothing is killed. A queued scan stops
+    immediately because it has not started; a running scan is asked to stop and
+    winds down at its next safe boundary, keeping whatever it has gathered.
+
+    The response is the scan as it stands right now — a running scan comes back
+    with `cancel_requested` true and status still RUNNING, so a client can never
+    report a stop that has not happened yet. Cancelling an already-cancelled
+    scan succeeds; cancelling one that has finished is a 409.
+    """
+    scan = scan_service.cancel_scan(db, current_user, scan_id)
+    return ScanRead.model_validate(scan)
 
 
 @router.delete(

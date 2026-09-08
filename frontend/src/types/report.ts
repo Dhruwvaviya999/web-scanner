@@ -11,6 +11,15 @@ export interface ReportMetadata {
   /** When the report was rendered, not when the scan ran. */
   generated_at: string;
   error_message: string | null;
+  cancelled_at: string | null;
+  /** Stage a failed scan was in. A stage name only, never a trace. */
+  failure_stage: string | null;
+  /**
+   * True only when the scan ran to completion. A failed or cancelled scan
+   * covers only what it reached before stopping, so an empty findings list on
+   * an inconclusive report is not an all-clear.
+   */
+  is_conclusive: boolean;
 }
 
 export interface CoverageSummary {
@@ -24,6 +33,8 @@ export interface CoverageSummary {
   pages_skipped: number | null;
   max_depth_reached: number | null;
   crawl_limit_reached: boolean | null;
+  /** Whether the run itself finished, rather than failing or being cancelled. */
+  scan_completed: boolean;
   /**
    * True only when every discovered endpoint was analysed or deliberately
    * skipped, with no failures. A clean result with this false means the scan

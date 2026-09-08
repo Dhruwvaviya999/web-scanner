@@ -1,4 +1,13 @@
-export const SCAN_STATUSES = ["PENDING", "RUNNING", "COMPLETED", "FAILED"] as const;
+export const SCAN_STATUSES = [
+  "QUEUED",
+  "RUNNING",
+  "COMPLETED",
+  "FAILED",
+  "CANCELLED",
+] as const;
+
+/** States a scan can still leave. Anything else is terminal. */
+export const ACTIVE_SCAN_STATUSES = ["QUEUED", "RUNNING"] as const;
 
 export type ScanStatus = (typeof SCAN_STATUSES)[number];
 
@@ -6,10 +15,27 @@ export interface Scan {
   id: string;
   target_url: string;
   status: ScanStatus;
+  queued_at: string | null;
   started_at: string | null;
+  /** Set for every ending — completed, failed and cancelled alike. */
   completed_at: string | null;
+  /** When cancellation was requested, not when the run wound down. */
+  cancelled_at: string | null;
   created_at: string;
   updated_at: string;
+
+  /** Lifecycle stage, e.g. `CRAWLING`. Null before a scan starts. */
+  current_stage: string | null;
+  /** Indicative only: a stage milestone, never a measurement of work done. */
+  progress_percent: number | null;
+  progress_message: string | null;
+  /**
+   * True once the owner has asked the scan to stop. The scan stays RUNNING
+   * until it observes the request — the status is what says it has stopped.
+   */
+  cancel_requested: boolean;
+  /** Which stage a failed scan was in. A stage name only, never a trace. */
+  failure_stage: string | null;
 
   /** Basic HTTP probe result. Null until a scan completes, or when it failed. */
   http_status_code: number | null;
@@ -58,10 +84,21 @@ export interface ScanListResponse {
 
 export interface ScanStats {
   total: number;
-  pending: number;
+  queued: number;
   running: number;
   completed: number;
   failed: number;
+  cancelled: number;
+}
+
+/** Whether a scan can still change state, and so is worth polling for. */
+export function isScanActive(scan: Pick<Scan, "status">): boolean {
+  return scan.status === "QUEUED" || scan.status === "RUNNING";
+}
+
+/** Whether a scan stopped before covering everything it could have. */
+export function isScanInconclusive(scan: Pick<Scan, "status">): boolean {
+  return scan.status === "FAILED" || scan.status === "CANCELLED";
 }
 
 export interface CreateScanPayload {

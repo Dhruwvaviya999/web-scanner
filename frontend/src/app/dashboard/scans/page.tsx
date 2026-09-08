@@ -18,8 +18,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useAsyncData } from "@/hooks/use-async-data";
+import { SCAN_POLL_INTERVAL_MS, usePolling } from "@/hooks/use-polling";
 import { scanService } from "@/services/scan.service";
-import { SCAN_STATUSES, type ScanStatus } from "@/types/scan";
+import { isScanActive, SCAN_STATUSES, type ScanStatus } from "@/types/scan";
 
 const PAGE_SIZE = 20;
 const ALL_STATUSES = "ALL";
@@ -40,9 +41,14 @@ export default function ScansPage() {
     [offset, status],
   );
 
-  const { data, loading, error, reload } = useAsyncData(fetchScans);
+  const { data, loading, error, reload, refresh } = useAsyncData(fetchScans);
   const scans = data?.items ?? [];
   const total = data?.total ?? 0;
+
+  // Poll only while something on this page can still change. Once every scan
+  // shown is terminal, the interval stops entirely.
+  const hasActiveScan = scans.some(isScanActive);
+  usePolling(refresh, hasActiveScan ? SCAN_POLL_INTERVAL_MS : null);
 
   const handleFilterChange = (value: string | null) => {
     setStatus((value as StatusFilter | null) ?? ALL_STATUSES);

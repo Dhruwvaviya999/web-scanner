@@ -20,6 +20,7 @@ import logging
 from app.scanner.analysis.aggregator import aggregate_findings
 from app.scanner.analysis.endpoint_analyzer import analyze_endpoint
 from app.scanner.analysis.types import AnalysisResult, EndpointAnalysisStatus
+from app.scanner.cancellation import CancellationToken, ScanCancelled
 from app.scanner.crawler.types import CapturedResponse
 from app.scanner.crawler.url_normalizer import canonical_url
 from app.scanner.security.types import FindingData
@@ -33,11 +34,23 @@ class EndpointAnalysisModule:
 
     name = "endpoint_analysis"
 
+    def __init__(self, cancellation: CancellationToken | None = None) -> None:
+        self._cancellation = cancellation or CancellationToken.none()
+
     async def run(self, target: ScanTarget, report: ScanReport) -> None:
         result = AnalysisResult()
         observations: list[tuple[str | None, FindingData]] = []
+        cancelled = False
 
         for url, response in self._responses(report):
+            # Analysis is local work, but stopping between endpoints keeps the
+            # partial result coherent: every endpoint is either fully assessed
+            # or untouched. Endpoints not reached simply do not appear, which is
+            # what makes the coverage numbers show the gap.
+            if self._cancellation.cancelled:
+                cancelled = True
+                break
+
             analysis = _safe_analyze(url, response)
             result.endpoint_analyses.append(analysis)
 
@@ -54,6 +67,11 @@ class EndpointAnalysisModule:
         report.metadata["endpoints_analyzed"] = result.analyzed
         report.metadata["endpoints_skipped"] = result.skipped
         report.metadata["endpoints_failed"] = result.failed
+
+        if cancelled:
+            # Published first, raised second: the findings from the endpoints
+            # that were assessed survive the stop.
+            raise ScanCancelled("ANALYZING")
 
     def _responses(self, report: ScanReport) -> list[tuple[str, CapturedResponse]]:
         """Every response to assess, keyed by the endpoint URL it belongs to.

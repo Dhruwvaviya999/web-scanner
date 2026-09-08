@@ -35,10 +35,21 @@ if TYPE_CHECKING:
 
 
 class ScanStatus(str, enum.Enum):
-    PENDING = "PENDING"
+    """The scan lifecycle. Legal transitions live in `services.scan_lifecycle`.
+
+    COMPLETED, FAILED and CANCELLED are terminal: a scan that reaches one of
+    them never runs again.
+    """
+
+    #: Created, not yet started.
+    QUEUED = "QUEUED"
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
+    #: Orchestration failed. Distinct from individual endpoints failing to
+    #: analyse, which is recorded in coverage and leaves the scan COMPLETED.
     FAILED = "FAILED"
+    #: Stopped on the owner's request. Partial results are kept.
+    CANCELLED = "CANCELLED"
 
 
 class Scan(Base, TimestampMixin):
@@ -58,13 +69,43 @@ class Scan(Base, TimestampMixin):
     status: Mapped[ScanStatus] = mapped_column(
         Enum(ScanStatus, name="scan_status", native_enum=True, validate_strings=True),
         nullable=False,
-        default=ScanStatus.PENDING,
-        server_default=ScanStatus.PENDING.value,
+        default=ScanStatus.QUEUED,
+        server_default=ScanStatus.QUEUED.value,
         index=True,
     )
 
+    # --- Lifecycle timing (phase 10) ---
+    # All timezone-aware UTC, consistent with the rest of the application.
+    # `completed_at` is the terminal timestamp for every ending — COMPLETED,
+    # FAILED and CANCELLED alike — so duration is always completed_at minus
+    # started_at and never needs a per-outcome column. `cancelled_at` is kept
+    # separately because "when the user asked to stop" is a distinct fact from
+    # "when the run actually wound down".
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    #: Set by the cancel endpoint; observed by the running scan at safe
+    #: boundaries. Cancellation is cooperative — nothing is killed.
+    cancel_requested: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
+    # --- Progress (phase 10) ---
+    # A validated string rather than a native enum: stages are presentation
+    # detail and will change more often than the status set, and ALTER TYPE per
+    # stage is friction for no gain. `services.scan_lifecycle.ScanStage`
+    # enforces the allowed values.
+    current_stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: Indicative only. NULL whenever a real figure cannot be justified — the
+    #: crawler does not know its total work in advance.
+    progress_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    progress_message: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    #: Which stage was running when a scan failed. Safe to show: a stage name,
+    #: never a stack trace, request or secret.
+    failure_stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     # --- Basic HTTP probe result ---
     # All nullable: a scan that failed, or has not run yet, has none of them.

@@ -46,6 +46,8 @@ class SkipReason(str, enum.Enum):
     UNSUPPORTED_SCHEME = "UNSUPPORTED_SCHEME"
     FETCH_FAILED = "FETCH_FAILED"
     TIME_BUDGET = "TIME_BUDGET"
+    #: Queued when the scan was cancelled. Never fetched.
+    CANCELLED = "CANCELLED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +114,10 @@ class CrawlResult:
     #: True when max_pages or the time budget stopped the crawl early. This is
     #: normal termination, not a failure — the scan still completes.
     limit_reached: bool = False
+    #: True when the crawl stopped because the scan was cancelled. Distinct from
+    #: `limit_reached`: a cancelled crawl did not reach a configured bound, it
+    #: was told to stop, and what it had already found is still valid.
+    cancelled: bool = False
     skip_reasons: dict[str, int] = field(default_factory=dict)
     #: Captured responses keyed by canonical endpoint URL, so the analysis stage
     #: can assess every crawled page without re-fetching it.

@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   CalendarClock,
   CheckCircle2,
+  CircleSlash,
   Globe2,
   ShieldQuestion,
   Timer,
@@ -113,13 +114,33 @@ export function ReportVerdict({
     );
   }
 
-  if (metadata.status === "PENDING" || metadata.status === "RUNNING") {
+  if (metadata.status === "CANCELLED") {
+    return (
+      <Card className="border-warning/40">
+        <CardContent className="flex items-start gap-3">
+          <CircleSlash className="mt-0.5 size-5 shrink-0 text-warning" aria-hidden />
+          <div className="space-y-1 text-sm">
+            <p className="font-medium">This scan was stopped before it finished</p>
+            <p className="text-muted-foreground">
+              What it found up to that point is reported below, but the target was not fully
+              assessed. Whatever this report does not list may simply never have been checked,
+              so treat it as inconclusive rather than clean.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (metadata.status === "QUEUED" || metadata.status === "RUNNING") {
     return (
       <Card className="border-info/40">
         <CardContent className="flex items-start gap-3">
           <ShieldQuestion className="mt-0.5 size-5 shrink-0 text-info" aria-hidden />
           <div className="space-y-1 text-sm">
-            <p className="font-medium">This scan is still running</p>
+            <p className="font-medium">
+              {metadata.status === "QUEUED" ? "This scan has not started yet" : "This scan is still running"}
+            </p>
             <p className="text-muted-foreground">
               The report shows what has been recorded so far and is not final.
             </p>

@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from app.models.scan import ScanStatus
 from app.scanner.security.types import FindingCategory, FindingConfidence, FindingSeverity
 
 #: Severity ordering used everywhere in a report. Most severe first.
@@ -47,6 +48,20 @@ class ReportMetadata:
     generated_at: datetime
     #: Present only when the scan itself failed.
     error_message: str | None = None
+    #: When cancellation was requested, for a scan that was stopped.
+    cancelled_at: datetime | None = None
+    #: Which stage a failed scan was in. A stage name only, never a trace.
+    failure_stage: str | None = None
+
+    @property
+    def is_conclusive(self) -> bool:
+        """Whether the scan ran to completion.
+
+        False for a failed or cancelled scan. A report for one of those covers
+        only what the run reached before it stopped, so a reader must never take
+        its emptiness as an all-clear.
+        """
+        return self.status == ScanStatus.COMPLETED.value
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,14 +82,21 @@ class CoverageSummary:
     pages_skipped: int | None
     max_depth_reached: int | None
     crawl_limit_reached: bool | None
+    #: Whether the run itself finished. A scan that failed or was cancelled
+    #: stopped part-way by definition, however much it had analysed by then.
+    scan_completed: bool = True
 
     @property
     def is_complete(self) -> bool:
         """True when everything discovered was analysed without failures.
 
         A report must not present a clean result as reassuring when coverage was
-        partial, so this is what the "no findings" wording keys on.
+        partial, so this is what the "no findings" wording keys on. A scan that
+        did not run to completion is never complete here, no matter what its
+        counters say: a cancelled run stopped before it knew what it had left.
         """
+        if not self.scan_completed:
+            return False
         if self.endpoints_discovered is None or self.endpoints_analyzed is None:
             return False
         if self.endpoints_failed:

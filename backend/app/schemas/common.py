@@ -51,3 +51,16 @@ NOT_FOUND_RESPONSE: dict[int | str, dict[str, Any]] = {
         "content": {"application/json": {"example": _example("not_found", "Scan not found.")}},
     }
 }
+CONFLICT_RESPONSE: dict[int | str, dict[str, Any]] = {
+    409: {
+        "model": ErrorResponse,
+        "description": "The resource is not in a state that allows this operation.",
+        "content": {
+            "application/json": {
+                "example": _example(
+                    "invalid_scan_transition", "A completed scan cannot be cancelled."
+                )
+            }
+        },
+    }
+}

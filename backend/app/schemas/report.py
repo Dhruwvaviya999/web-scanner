@@ -29,6 +29,18 @@ class ReportMetadataRead(BaseModel):
     duration_seconds: float | None
     generated_at: datetime
     error_message: str | None = None
+    cancelled_at: datetime | None = None
+    failure_stage: str | None = Field(
+        default=None,
+        description="Stage a failed scan was in. A stage name only, never a trace.",
+    )
+    is_conclusive: bool = Field(
+        description=(
+            "True only when the scan ran to completion. A failed or cancelled scan "
+            "covers only what it reached before stopping, so an empty findings list "
+            "on an inconclusive report is not an all-clear."
+        )
+    )
 
 
 class CoverageSummaryRead(BaseModel):
@@ -44,6 +56,9 @@ class CoverageSummaryRead(BaseModel):
     pages_skipped: int | None
     max_depth_reached: int | None
     crawl_limit_reached: bool | None
+    scan_completed: bool = Field(
+        description="Whether the run itself finished, as opposed to failing or being cancelled."
+    )
     is_complete: bool = Field(
         description=(
             "True only when every discovered endpoint was analysed or deliberately "

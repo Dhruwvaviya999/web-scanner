@@ -108,6 +108,10 @@ class ScanReport:
     raw: "RawHttpResponse | None" = None
     #: Security observations produced by the detector modules.
     findings: list["FindingData"] = field(default_factory=list)
+    #: True when the run stopped because the scan was cancelled. Distinct from
+    #: `error_code`: a cancelled scan is a normal outcome, not a failure, and
+    #: whatever it managed to gather before stopping is still valid.
+    cancelled: bool = False
     #: Attack surface discovered by the crawler, when it ran.
     crawl: "CrawlResult | None" = None
     #: Per-endpoint analysis and the aggregated findings it produced.

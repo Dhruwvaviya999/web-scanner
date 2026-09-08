@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 
+from app.scanner.cancellation import CancellationToken, ScanCancelled
 from app.scanner.crawler.crawler import Crawler
 from app.scanner.crawler.types import CrawlConfig, FetchedPage
 from app.scanner.crawler.url_normalizer import Origin, is_same_origin, origin_of
@@ -31,9 +32,15 @@ class CrawlModule:
 
     name = "crawler"
 
-    def __init__(self, config: ScannerConfig, crawl_config: CrawlConfig) -> None:
+    def __init__(
+        self,
+        config: ScannerConfig,
+        crawl_config: CrawlConfig,
+        cancellation: CancellationToken | None = None,
+    ) -> None:
         self._config = config
         self._crawl_config = crawl_config
+        self._cancellation = cancellation or CancellationToken.none()
 
     async def run(self, target: ScanTarget, report: ScanReport) -> None:
         if not self._crawl_config.enabled:
@@ -56,13 +63,21 @@ class CrawlModule:
                 allow_url=lambda url: is_same_origin(url, origin),
                 max_redirects=self._crawl_config.max_redirects_per_page,
             )
-            crawler = Crawler(self._crawl_config, _network_fetcher(fetcher, origin))
+            crawler = Crawler(
+                self._crawl_config, _network_fetcher(fetcher, origin), self._cancellation
+            )
             result = await crawler.crawl(seed_url)
 
         report.crawl = result
         report.metadata["pages_crawled"] = result.pages_crawled
         report.metadata["endpoints_discovered"] = len(result.endpoints)
         report.metadata["forms_discovered"] = len(result.forms)
+
+        if result.cancelled:
+            # The partial crawl is attached above before the pipeline unwinds,
+            # so a cancelled scan keeps the surface it did discover instead of
+            # discarding the work it already paid for.
+            raise ScanCancelled("CRAWLING")
 
 
 def _network_fetcher(fetcher: HttpFetcher, origin: Origin):
