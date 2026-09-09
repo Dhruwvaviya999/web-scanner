@@ -20,6 +20,11 @@ so execution is split into separate units of work:
 **Every status change goes through the state machine.** `scan_lifecycle`
 decides what is legal; nothing here assigns a status without it.
 
+**Authorization identities follow the same rule.** A scan may be given
+several target identities to compare; each wraps a phase-11 authentication
+context, and each is carried the same way — as an argument, never as a row.
+Only labels and coverage counters are persisted.
+
 **Target-authentication secrets never touch the database.** A credential the
 user supplies for their own application arrives as an `AuthenticationContext`,
 is passed down the call stack into the scanner, and is released when the call
@@ -43,10 +48,13 @@ from app.models.scan import Scan, ScanStatus
 from app.models.user import User
 from app.scanner import CrawlConfig, ScannerConfig, ScanReport, WebScanner
 from app.scanner.auth import AuthenticationContext, AuthMode, AuthStatus
+from app.scanner.authorization import AuthorizationConfig, AuthorizationBudgetLimits
+from app.scanner.authorization.matrix import AuthorizationPlan
 from app.scanner.security.types import FindingSeverity
 from app.scanner import ActiveScanConfig, ProbeBudgetLimits
 from app.scanner.vulnerabilities.sqli.detector import SqlInjectionDetector
 from app.scanner.vulnerabilities.xss.detector import ReflectedXssDetector
+from app.schemas.scan import LABEL_SEPARATOR
 from app.services import attack_surface_service, finding_service
 from app.services.cancellation import cancellation_token_for
 from app.services.scan_lifecycle import (
@@ -77,6 +85,7 @@ MODULE_STAGE: dict[str, ScanStage] = {
     "crawler": ScanStage.CRAWLING,
     "endpoint_analysis": ScanStage.ANALYZING,
     "active_scan": ScanStage.ANALYZING,
+    "authorization": ScanStage.AUTHORIZATION,
 }
 
 
@@ -111,6 +120,24 @@ def _active_config() -> ActiveScanConfig:
             per_scan=settings.MAX_ACTIVE_PROBES_PER_SCAN,
         ),
         max_targets=settings.ACTIVE_SCAN_MAX_TARGETS,
+    )
+
+
+def _authorization_config() -> AuthorizationConfig:
+    """Budgets for the authorization stage.
+
+    The ceiling matters more here than anywhere else: cost is identities times
+    endpoints, so a careless configuration is a load test against the target.
+    """
+    return AuthorizationConfig(
+        enabled=settings.AUTHZ_ENABLED,
+        limits=AuthorizationBudgetLimits(
+            max_contexts=settings.AUTHZ_MAX_CONTEXTS,
+            max_endpoints=settings.AUTHZ_MAX_ENDPOINTS,
+            max_comparisons_per_endpoint=settings.AUTHZ_MAX_COMPARISONS_PER_ENDPOINT,
+            max_requests=settings.AUTHZ_MAX_REQUESTS,
+        ),
+        equivalence_threshold=settings.AUTHZ_EQUIVALENCE_THRESHOLD,
     )
 
 
@@ -182,6 +209,7 @@ def create_scan(
     user: User,
     target_url: str,
     authentication: AuthenticationContext | None = None,
+    authorization: AuthorizationPlan | None = None,
 ) -> Scan:
     """Queue a scan, run it, and return the finished row.
 
@@ -196,8 +224,9 @@ def create_scan(
     phase keeps execution inline.
     """
     auth = authentication or AuthenticationContext.none()
-    scan_id = enqueue_scan(db, user, target_url, auth.mode)
-    return execute_scan(scan_id, authentication=auth)
+    plan = authorization or AuthorizationPlan()
+    scan_id = enqueue_scan(db, user, target_url, auth.mode, plan)
+    return execute_scan(scan_id, authentication=auth, authorization=plan)
 
 
 def enqueue_scan(
@@ -205,6 +234,7 @@ def enqueue_scan(
     user: User,
     target_url: str,
     auth_mode: AuthMode = AuthMode.NONE,
+    authorization: AuthorizationPlan | None = None,
 ) -> uuid.UUID:
     """Unit of work 1: record the scan as QUEUED and commit.
 
@@ -224,6 +254,10 @@ def enqueue_scan(
         # written only once the initial access check has actually run.
         auth_mode=auth_mode.value,
         auth_status=AuthStatus.NOT_CONFIGURED.value,
+        # Whether authorization testing was asked for is known now; what it
+        # found is written only once the stage has actually run.
+        authz_enabled=bool(authorization and authorization.enabled),
+        authz_context_labels=_context_labels(authorization),
     )
     db.add(scan)
     db.commit()
@@ -232,7 +266,10 @@ def enqueue_scan(
 
 
 def execute_scan(
-    scan_id: uuid.UUID, *, authentication: AuthenticationContext | None = None
+    scan_id: uuid.UUID,
+    *,
+    authentication: AuthenticationContext | None = None,
+    authorization: AuthorizationPlan | None = None,
 ) -> Scan:
     """Run a queued scan to a terminal state and return the resulting row.
 
@@ -258,6 +295,8 @@ def execute_scan(
             cancellation=cancellation_token_for(scan_id),
             on_module_start=stage.enter_module,
             authentication=authentication,
+            authz_config=_authorization_config(),
+            authorization=authorization,
         ).scan_sync(target_url)
     except Exception:  # noqa: BLE001 - the scan must not be left RUNNING
         logger.exception("Scan %s raised while running", scan_id)
@@ -308,6 +347,7 @@ def _finish(scan_id: uuid.UUID, report: ScanReport, stage: _StageTracker) -> Sca
 
         _apply_probe(scan, report)
         _apply_authentication(scan, report)
+        _apply_authorization(scan, report)
 
         # Order matters: endpoints must exist and be flushed before findings can
         # be linked to them, and the analysis outcome is recorded on those rows.
@@ -420,6 +460,40 @@ def _apply_authentication(scan: Scan, report: ScanReport) -> None:
         return
     scan.auth_mode = report.auth.mode.value
     scan.auth_status = report.auth.status.value
+
+
+def _context_labels(plan: "AuthorizationPlan | None") -> str | None:
+    """The identity labels, joined for storage. Names only, never credentials."""
+    if plan is None or not plan.contexts:
+        return None
+    labels = LABEL_SEPARATOR.join(context.display_name for context in plan.contexts)
+    return labels[:512] or None
+
+
+def _apply_authorization(scan: Scan, report: ScanReport) -> None:
+    """Record what the authorization stage compared.
+
+    Counters only. The observations themselves carry a status, a length and a
+    digest — never a body — and the findings they produced have already gone
+    into the shared aggregation, so nothing else needs copying here.
+    """
+    outcome = report.authorization
+    if outcome is None:
+        return
+
+    scan.authz_enabled = outcome.enabled
+    if not outcome.enabled:
+        return
+
+    scan.authz_contexts = outcome.contexts
+    scan.authz_endpoints_eligible = outcome.endpoints_eligible
+    scan.authz_endpoints_tested = outcome.endpoints_tested
+    scan.authz_comparisons = outcome.comparisons
+    scan.authz_unknown = outcome.unknown
+    scan.authz_skipped = outcome.skipped
+    scan.authz_failed = outcome.failed
+    if outcome.context_labels:
+        scan.authz_context_labels = LABEL_SEPARATOR.join(outcome.context_labels)[:512]
 
 
 def _apply_probe(scan: Scan, report: ScanReport) -> None:

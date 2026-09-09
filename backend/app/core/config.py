@@ -102,6 +102,20 @@ class Settings(BaseSettings):
     SQLI_ENABLED: bool = True
     SQLI_MAX_PARAMETERS_PER_ENDPOINT: int = Field(default=6, gt=0, le=50)
 
+    # --- Authorization testing (phase 12) ---
+    # Off unless a scan supplies at least two identities. The budget matters
+    # more here than anywhere else in the scanner: every extra identity re-tests
+    # every eligible endpoint, so cost is contexts x endpoints.
+    AUTHZ_ENABLED: bool = True
+    AUTHZ_MAX_CONTEXTS: int = Field(default=4, gt=1, le=8)
+    AUTHZ_MAX_ENDPOINTS: int = Field(default=100, gt=0, le=1000)
+    AUTHZ_MAX_COMPARISONS_PER_ENDPOINT: int = Field(default=8, gt=0, le=64)
+    AUTHZ_MAX_REQUESTS: int = Field(default=400, gt=0, le=4000)
+    #: Body similarity at or above which two responses count as the same
+    #: resource. High on purpose: "roughly alike" is how a shared page template
+    #: gets mistaken for a leaked record.
+    AUTHZ_EQUIVALENCE_THRESHOLD: float = Field(default=0.95, gt=0.5, le=1.0)
+
     @field_validator("JWT_SECRET_KEY")
     @classmethod
     def _reject_placeholder_secret(cls, value: str) -> str:

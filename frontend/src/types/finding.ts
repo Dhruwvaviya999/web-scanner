@@ -6,6 +6,7 @@ export const FINDING_CATEGORIES = [
   "XSS",
   "SQLI",
   "TLS",
+  "AUTHORIZATION",
   "INFORMATION_DISCLOSURE",
   "OTHER",
 ] as const;
@@ -79,6 +80,7 @@ export const CATEGORY_LABELS: Record<FindingCategory, string> = {
   XSS: "Cross-site scripting",
   SQLI: "SQL injection",
   TLS: "TLS",
+  AUTHORIZATION: "Access control",
   INFORMATION_DISCLOSURE: "Information disclosure",
   OTHER: "Other",
 };
@@ -97,4 +99,5 @@ export function parameterFromSubject(subject: string | null): string | null {
 export const ACTIVE_CATEGORIES: ReadonlySet<FindingCategory> = new Set<FindingCategory>([
   "XSS",
   "SQLI",
+  "AUTHORIZATION",
 ]);

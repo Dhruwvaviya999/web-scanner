@@ -43,6 +43,30 @@ export const AUTH_STATUS_LABELS: Record<AuthStatus, string> = {
   UNKNOWN: "Unconfirmed",
 };
 
+/** What the authorized user says should happen. The scanner never infers this. */
+export const ACCESS_EXPECTATIONS = ["ALLOWED", "DENIED", "UNKNOWN"] as const;
+
+export type AccessExpectation = (typeof ACCESS_EXPECTATIONS)[number];
+
+/**
+ * Safe authorization coverage for a scan.
+ *
+ * Counters and user-chosen identity labels. There is no field here for a
+ * credential, because the API has none to return.
+ */
+export interface ScanAuthorizationInfo {
+  enabled: boolean;
+  contexts: number | null;
+  context_labels: string[];
+  endpoints_eligible: number | null;
+  endpoints_tested: number | null;
+  comparisons: number | null;
+  /** Comparisons with no declared policy to judge against. Not findings. */
+  unknown: number | null;
+  skipped: number | null;
+  failed: number | null;
+}
+
 /**
  * Safe authentication metadata for a scan.
  *
@@ -87,6 +111,10 @@ export interface Scan {
   auth_mode: AuthMode;
   auth_status: AuthStatus;
   authentication: ScanAuthenticationInfo;
+
+  /** Authorization-testing coverage. Counters and labels only. */
+  authz_enabled: boolean;
+  authorization: ScanAuthorizationInfo;
 
   /** Basic HTTP probe result. Null until a scan completes, or when it failed. */
   http_status_code: number | null;
@@ -171,9 +199,45 @@ export interface CreateScanAuthentication {
   cookies?: { name: string; value: string }[];
 }
 
+/**
+ * One explicitly supplied testing identity.
+ *
+ * Reuses the authentication shape, so credentials travel the same way they do
+ * for a single-identity scan: in the request body, once, never stored.
+ */
+export interface CreateScanAuthorizationContext {
+  id: string;
+  label: string;
+  role?: string;
+  privilege_rank?: number;
+  authentication: CreateScanAuthentication;
+}
+
+/** One declared expectation. The scanner never invents these. */
+export interface CreateScanAuthorizationRule {
+  context_id: string;
+  resource: string;
+  expected: AccessExpectation;
+}
+
+/** Which identity a specific resource belongs to. */
+export interface CreateScanResourceOwnership {
+  resource: string;
+  owner: string;
+}
+
+export interface CreateScanAuthorization {
+  enabled: boolean;
+  include_anonymous: boolean;
+  contexts: CreateScanAuthorizationContext[];
+  rules: CreateScanAuthorizationRule[];
+  ownership: CreateScanResourceOwnership[];
+}
+
 export interface CreateScanPayload {
   target_url: string;
   authentication?: CreateScanAuthentication;
+  authorization?: CreateScanAuthorization;
 }
 
 export interface ListScansParams {

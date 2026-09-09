@@ -111,11 +111,14 @@ class StubScanner:
     on_scan = None
 
     def __init__(self, config, *, crawl_config, active_config, detectors,
-                 cancellation, on_module_start, authentication):
+                 cancellation, on_module_start, authentication,
+                 authz_config, authorization):
         self.config = config
         self.cancellation = cancellation
         self.on_module_start = on_module_start
         self.authentication = authentication
+        self.authz_config = authz_config
+        self.authorization = authorization
         StubScanner.instances.append(self)
 
     def scan_sync(self, raw_url: str) -> ScanReport:

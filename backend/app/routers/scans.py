@@ -17,6 +17,8 @@ from app.core.errors import UnprocessableEntityError
 from app.models.scan import ScanStatus
 from app.scanner.auth import AuthConfigError, AuthenticationContext, AuthMode
 from app.scanner.auth.context import build_context
+from app.scanner.authorization import AuthorizationContext, MatrixError, build_matrix
+from app.scanner.authorization.matrix import AuthorizationPlan
 from app.schemas.attack_surface import (
     AttackSurfaceSummary,
     EndpointListResponse,
@@ -32,6 +34,7 @@ from app.schemas.common import (
 from app.schemas.report import ScanReportRead
 from app.schemas.finding import FindingListResponse, FindingRead, FindingSummary
 from app.schemas.scan import (
+    ANONYMOUS_CONTEXT_ID,
     ScanCreateWithAuth,
     ScanListResponse,
     ScanRead,
@@ -67,8 +70,13 @@ def create_scan(
     returned — `ScanRead` can only express the mode and a status.
     """
     authentication = _authentication_context(payload)
+    authorization = _authorization_plan(payload)
     scan = scan_service.create_scan(
-        db, current_user, payload.target_url, authentication=authentication
+        db,
+        current_user,
+        payload.target_url,
+        authentication=authentication,
+        authorization=authorization,
     )
     return ScanRead.model_validate(scan)
 
@@ -99,6 +107,79 @@ def _authentication_context(payload: ScanCreateWithAuth) -> AuthenticationContex
             code="invalid_authentication",
             details=[{"field": "authentication", "message": str(exc)}],
         ) from exc
+
+
+def _authorization_plan(payload: ScanCreateWithAuth) -> AuthorizationPlan:
+    """Turn declared identities and policy into a plan the scanner can run.
+
+    Each identity's credentials go through `build_context`, the same phase-11
+    path the scanning identity uses, so every one of them is validated and bound
+    to the origin being scanned. An identity cannot be given a credential for
+    somewhere else, and none of them is persisted.
+    """
+    authz = payload.authorization
+    if authz is None or not authz.enabled:
+        return AuthorizationPlan()
+
+    contexts: list[AuthorizationContext] = []
+
+    # Anonymous goes first so a truncating budget can never drop it: "is this
+    # protected at all?" is the most valuable question in the set.
+    if authz.include_anonymous:
+        contexts.append(
+            AuthorizationContext(
+                id=ANONYMOUS_CONTEXT_ID,
+                display_name="Anonymous",
+                role_label=None,
+                privilege_rank=0,
+                authentication=AuthenticationContext.none(),
+            )
+        )
+
+    try:
+        for declared in authz.contexts:
+            contexts.append(
+                AuthorizationContext(
+                    id=declared.id,
+                    display_name=declared.label,
+                    role_label=declared.role,
+                    privilege_rank=declared.privilege_rank,
+                    authentication=build_context(
+                        declared.authentication.mode,
+                        payload.target_url,
+                        token=(
+                            declared.authentication.token.get_secret_value()
+                            if declared.authentication.token
+                            else None
+                        ),
+                        cookies=[
+                            (cookie.name, cookie.value.get_secret_value())
+                            for cookie in declared.authentication.cookies
+                        ],
+                    ),
+                )
+            )
+    except AuthConfigError as exc:
+        raise UnprocessableEntityError(
+            str(exc),
+            code="invalid_authorization_context",
+            details=[{"field": "authorization.contexts", "message": str(exc)}],
+        ) from exc
+
+    try:
+        matrix = build_matrix(
+            rules=[(r.context_id, r.resource, r.expected) for r in authz.rules],
+            ownership=[(o.resource, o.owner) for o in authz.ownership],
+            known_context_ids=[context.id for context in contexts],
+        )
+    except MatrixError as exc:
+        raise UnprocessableEntityError(
+            str(exc),
+            code="invalid_authorization_policy",
+            details=[{"field": "authorization", "message": str(exc)}],
+        ) from exc
+
+    return AuthorizationPlan(contexts=tuple(contexts), matrix=matrix)
 
 
 @router.get("", response_model=ScanListResponse, summary="List the caller's scans")

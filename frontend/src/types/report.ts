@@ -14,6 +14,27 @@ export interface ReportAuthentication {
   confirmed: boolean;
 }
 
+/**
+ * What the authorization stage compared.
+ *
+ * `unknown` is the number to read first: comparisons where no policy was
+ * declared. A high count does not mean the application is fine — it means the
+ * scan was never told what "fine" would look like.
+ */
+export interface ReportAuthorization {
+  enabled: boolean;
+  contexts: number;
+  context_labels: string[];
+  endpoints_eligible: number;
+  endpoints_tested: number;
+  comparisons: number;
+  unknown: number;
+  skipped: number;
+  failed: number;
+  /** True only when at least one comparison was measured against a declared rule. */
+  has_policy: boolean;
+}
+
 export interface ReportMetadata {
   scan_id: string;
   target_url: string;
@@ -55,6 +76,8 @@ export interface CoverageSummary {
    * the anonymous surface was ever covered.
    */
   authentication_usable: boolean;
+  /** Authorization testing, which is separate from authentication coverage. */
+  authorization: ReportAuthorization;
   /**
    * True only when every discovered endpoint was analysed or deliberately
    * skipped, with no failures. A clean result with this false means the scan

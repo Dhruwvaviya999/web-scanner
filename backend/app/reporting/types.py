@@ -61,6 +61,45 @@ class ReportAuthentication:
 
 
 @dataclass(frozen=True, slots=True)
+class ReportAuthorization:
+    """What the authorization stage compared.
+
+    Counters and user-chosen labels. There is no field here for a credential, a
+    response body or a fingerprint, so a private record cannot travel into a
+    report through this path.
+
+    `unknown` is the number the report leans on hardest: comparisons where no
+    policy was declared. A large number there does not mean the application is
+    fine, it means the scanner was not told what "fine" would look like.
+    """
+
+    enabled: bool = False
+    contexts: int = 0
+    context_labels: tuple[str, ...] = ()
+    endpoints_eligible: int = 0
+    endpoints_tested: int = 0
+    comparisons: int = 0
+    unknown: int = 0
+    skipped: int = 0
+    failed: int = 0
+
+    @property
+    def conclusive_comparisons(self) -> int:
+        """Comparisons that had a declared policy to judge against."""
+        return max(0, self.comparisons - self.unknown)
+
+    @property
+    def has_policy(self) -> bool:
+        """Whether any comparison was measured against a declared expectation.
+
+        False means authorization was exercised but nothing was asserted — the
+        scan observed access without being able to call any of it right or
+        wrong.
+        """
+        return self.enabled and self.conclusive_comparisons > 0
+
+
+@dataclass(frozen=True, slots=True)
 class ReportMetadata:
     """What was scanned, when, and how the scan ended."""
 
@@ -130,6 +169,9 @@ class CoverageSummary:
     #: False when credentials were supplied and the target refused them. The
     #: crawl then covered only the anonymous surface, whatever the counters say.
     authentication_usable: bool = True
+    #: Authorization testing, which is separate from authentication coverage: a
+    #: scan can authenticate perfectly and test no access control at all.
+    authorization: ReportAuthorization = field(default_factory=lambda: ReportAuthorization())
 
     @property
     def is_complete(self) -> bool:

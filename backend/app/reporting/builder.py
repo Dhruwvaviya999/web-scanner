@@ -18,6 +18,7 @@ from app.reporting.types import (
     CategoryGroup,
     CoverageSummary,
     ReportAuthentication,
+    ReportAuthorization,
     ReportEndpointRef,
     ReportFinding,
     ReportMetadata,
@@ -105,6 +106,30 @@ def _coverage(scan: Scan) -> CoverageSummary:
         crawl_limit_reached=scan.crawl_limit_reached,
         scan_completed=scan.status is ScanStatus.COMPLETED,
         authentication_usable=scan.auth_status != AuthStatus.REJECTED.value,
+        authorization=_authorization(scan),
+    )
+
+
+def _authorization(scan: Scan) -> ReportAuthorization:
+    """Authorization coverage from the stored counters.
+
+    `or 0` throughout: a NULL counter means the stage did not reach that number,
+    which for a report is the same as zero. `enabled` is what distinguishes
+    "tested nothing" from "was never asked to test".
+    """
+    labels = tuple(
+        label for label in (scan.authz_context_labels or "").split("\x1f") if label
+    )
+    return ReportAuthorization(
+        enabled=bool(scan.authz_enabled),
+        contexts=scan.authz_contexts or 0,
+        context_labels=labels,
+        endpoints_eligible=scan.authz_endpoints_eligible or 0,
+        endpoints_tested=scan.authz_endpoints_tested or 0,
+        comparisons=scan.authz_comparisons or 0,
+        unknown=scan.authz_unknown or 0,
+        skipped=scan.authz_skipped or 0,
+        failed=scan.authz_failed or 0,
     )
 
 

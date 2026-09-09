@@ -299,7 +299,7 @@ Always change the schema through a migration; never edit the database by hand.
 
 ```bash
 cd backend
-.venv\Scripts\python -m pytest          # 500 tests
+.venv\Scripts\python -m pytest          # 576 tests
 ```
 
 | Suite | Covers |
@@ -324,6 +324,7 @@ cd backend
 | `test_attack_surface_api.py` | Endpoint/form API ownership and isolation |
 | `test_scan_lifecycle.py` | State machine, cancellation, progress, failure isolation |
 | `test_authenticated_scanning.py` | Credential validation, origin scope, transport, authenticated discovery, leakage |
+| `test_authorization_testing.py` | Policy matching, access comparison, horizontal/vertical/object-level checks, budget, leakage |
 
 The detector and crawler suites need no network: the crawler's page fetcher is injected, so
 limits, cycles and failure handling are deterministic. The API suites drive the real app through
@@ -1517,6 +1518,272 @@ credential.
 
 ---
 
+## Authorized authorization and access-control testing (Phase 12)
+
+Phase 11 taught the scanner to sign in as one identity. Phase 12 gives it
+several and asks a different question: **can one of them reach what belongs to
+another?**
+
+Broken access control is not something a single response reveals. A 403 might be
+a working check or a broken route; a 200 might be a private record or an empty
+list. Meaning comes only from comparison, so everything below is comparative.
+
+### The rule that governs the whole feature
+
+A finding requires **all three** of:
+
+1. a declared expectation of `DENIED` for this identity and resource,
+2. a reference identity that was actually served the resource, and
+3. the subject receiving *materially the same content* as that reference.
+
+Drop any one and the result is `UNKNOWN`, and `UNKNOWN` is never a finding.
+
+That is not timidity. Without (1) the scanner would be inventing an
+application's business rules; without (2) it does not know what "the resource"
+even looks like; without (3) a 200 carrying a shared page template reads as a
+data leak. Authorization scanners are notorious for noise, and each of those
+three is one of the ways they generate it.
+
+### What the scanner does not do
+
+It does not create accounts, register users, guess usernames, passwords or role
+names, brute-force identifiers, or attack authentication in any way. Every
+identity is handed to it. Phase 11's prohibitions carry over unchanged, and
+Phase 12 adds no way around them.
+
+It also does not enumerate. There is no `1..100000` loop and no path
+brute-forcer: the resources tested are the ones the crawler already reached plus
+the ones the authorized user named in the policy.
+
+### Identities
+
+An `AuthorizationContext` is a label, an optional role, a privilege rank, and a
+phase-11 `AuthenticationContext`. It wraps the existing credential handling
+rather than repeating it, so every request still goes through the one transport
+that applies credentials, and every secret still lives in the object that
+refuses to render itself.
+
+| Field | Meaning |
+| ----- | ------- |
+| `id` | Stable identifier the policy refers to. Not a secret. |
+| `display_name` | What appears in the report. |
+| `role_label` | Free text such as USER or ADMIN. **Metadata only** — the scanner attaches no meaning to the word "admin". |
+| `privilege_rank` | Higher is more privileged. Used *only* to tell a vertical comparison from a horizontal one, never to decide what should be allowed. |
+
+The anonymous identity is added by the scanner and carries no credential, so
+"is this protected at all?" is always answerable.
+
+### The declared policy
+
+The scanner cannot read an application's authorization rules out of its HTTP
+traffic, so it does not try. The policy is supplied:
+
+```json
+"rules": [
+  {"context_id": "alice", "resource": "/admin/*",  "expected": "DENIED"},
+  {"context_id": "admin", "resource": "/admin",    "expected": "ALLOWED"}
+],
+"ownership": [
+  {"resource": "/api/orders/101", "owner": "alice"},
+  {"resource": "/api/orders/102", "owner": "bob"}
+]
+```
+
+Matching is on the URL **path**, exact or with one trailing `*`. No regular
+expressions: a policy language a user can get subtly wrong is worse than one
+that only does the obvious thing. The most specific rule wins, so `/admin/*`
+denied can be overridden by `/admin/health` allowed.
+
+**Ownership** is the shortcut that makes object-level testing practical. Naming
+an object's owner implies that the owner may read it and that peers may not,
+without the user writing a rule per identity per object.
+
+One nuance worth knowing: an ownership-derived denial is **not** applied to an
+identity that outranks the owner. Most applications intend an administrator to
+be able to read a customer's order, and deciding otherwise would be the scanner
+inventing a business rule. A user who does want that boundary tested writes it
+as an explicit rule, which always takes precedence.
+
+### What gets compared
+
+| Comparison | Question |
+| ---------- | -------- |
+| `ANONYMOUS` | Did a request with no credential receive protected content? |
+| `HORIZONTAL` | Did one identity receive another's resource at the same privilege level? |
+| `VERTICAL` | Did a lower-privilege identity receive a higher-privilege resource? |
+| `OBJECT_LEVEL` | Did an identity receive an object whose declared owner is someone else? |
+
+Observation and expectation are recorded separately on every test, so a reader
+can always see whether a verdict rests on a declared policy or on nothing:
+
+```
+AuthorizationObservation
+  context / reference / url
+  expected:  ALLOWED | DENIED | UNKNOWN
+  observed:  ALLOWED | DENIED | INCONCLUSIVE
+  verdict:   MATCHES_POLICY | VIOLATION | CONFLICT | UNKNOWN
+```
+
+`CONFLICT` — expected allowed, observed denied — is reported but never becomes a
+finding. Failing closed is not a vulnerability; it does mean the declared policy
+and the application disagree, and somebody should find out which is wrong.
+
+### Deciding what a response means
+
+Two separate questions, because neither answers the other.
+
+**Did this identity get in?** 401, 403, 404 and 405 are refusals. A redirect
+landing on a sign-in page is a refusal expressed as a redirect. 2xx is access.
+Anything else — 5xx, an unresolved redirect — is `INCONCLUSIVE`, because only
+`ALLOWED` can contribute to a finding and ambiguity must not.
+
+**Did two identities receive the same thing?** All of:
+
+* same status,
+* same media type,
+* a body long enough for similarity to mean anything (two 20-byte error pages
+  are always "similar"; concluding from that flags every site with a consistent
+  denial page),
+* and a normalised-body match at or above 0.95.
+
+Timestamps, UUIDs and long hex blobs are collapsed before comparison, so a
+request id rendered into an otherwise identical page does not hide a match.
+
+**Timing is not used and never will be.** Network variance dwarfs application
+variance; treating it as an authorization signal manufactures findings out of
+noise.
+
+### Read-only, and bounded
+
+Only `GET` is sent. No `POST`, `PUT`, `PATCH` or `DELETE` is issued to test
+authorization, so a scan cannot change the state of the application it is
+measuring. Where an authorization boundary exists only on a state-changing
+operation, it is simply not tested — the scanner says nothing rather than
+causing a side effect to find out.
+
+Cost is identities x endpoints, which is why the budget matters more here than
+anywhere else in the scanner. It fails closed: the reservation happens before
+the request, so exhaustion means no request rather than one more.
+
+| Limit | Default | Setting |
+| ----- | ------: | ------- |
+| Identities | 4 | `AUTHZ_MAX_CONTEXTS` |
+| Endpoints tested | 100 | `AUTHZ_MAX_ENDPOINTS` |
+| Comparisons per endpoint | 8 | `AUTHZ_MAX_COMPARISONS_PER_ENDPOINT` |
+| Requests, whole stage | 400 | `AUTHZ_MAX_REQUESTS` |
+
+Each identity gets its own HTTP client. Sharing one would share its cookie jar,
+and a `Set-Cookie` from the target could then be replayed as another identity's
+request — silently invalidating every comparison drawn afterwards. The jar is
+cleared before each request as well.
+
+### Nothing here weakens scope
+
+Every request goes through the same `HttpFetcher` as the rest of the scanner.
+There is no authorization transport. URL validation, the SSRF guard, the
+http/https-only rule, the exact-origin lock, per-hop redirect re-validation,
+redirect limits, timeouts and the response cap all apply unchanged, and each
+identity's credentials are bound to the scanned origin exactly as in phase 11.
+
+Cancellation is honoured before each resource, before each identity switch and
+before each request, so a cancelled scan starts no further authorization
+traffic.
+
+### Nothing private is retained
+
+A response is reduced to a `ResponseFingerprint` — status, media type, byte
+length, a truncated digest of the normalised body, and the final path. No
+substring of a body survives, so a private record cannot reach a finding, a
+report or a log through this path.
+
+Findings therefore carry the resource, the requesting identity, the expected and
+observed access, and that fingerprint summary. Never a token, a cookie, a header
+or a line of response content.
+
+### Findings
+
+| Rule | Severity | Confidence |
+| ---- | -------- | ---------- |
+| `AUTHZ_ANONYMOUS_ACCESS` | HIGH | HIGH when the content matches the reference, else MEDIUM |
+| `AUTHZ_HORIZONTAL_ACCESS` | HIGH | as above |
+| `AUTHZ_VERTICAL_ACCESS` | HIGH | as above |
+| `AUTHZ_OBJECT_LEVEL_ACCESS` | HIGH | as above |
+
+All four are category `AUTHORIZATION` and go through the same aggregation,
+occurrence tracking and reporting as every other finding — there is no separate
+authorization pipeline. The subject is `identity:url`, so two identities
+reaching one resource stay separate findings rather than merging into one that
+hides which boundary failed.
+
+One deliberate suppression: when an anonymous request already reached a
+resource, authenticated identities reaching it too are the same defect seen
+again. The anonymous finding is kept — "no credential was needed" is the most
+useful way to say it — and the rest remain as observations.
+
+### Coverage
+
+Authorization coverage is reported separately from authentication coverage,
+because a scan can authenticate perfectly and test no access control at all:
+
+```json
+"authorization": {
+  "enabled": true, "contexts": 4,
+  "context_labels": ["Anonymous", "alice", "bob", "admin"],
+  "endpoints_eligible": 12, "endpoints_tested": 12,
+  "comparisons": 48, "unknown": 20, "skipped": 0, "failed": 0,
+  "has_policy": true
+}
+```
+
+`unknown` is the number to read first, and `has_policy` is the one that decides
+the wording. Three states are kept strictly apart, because conflating them is
+how a scanner misleads:
+
+* **not enabled** — nothing here says anything about access control;
+* **enabled, `has_policy` false** — access was compared, but nothing was
+  declared, so every comparison is unknown and none of it is a pass;
+* **enabled, `has_policy` true** — comparisons were measured against declared
+  expectations, and only this can support "no access-control problems found".
+
+Even then the report says what it means: results cover the supplied identities
+and resources only, and no other user, role or permission level was tested.
+
+### API
+
+```json
+POST /api/scans
+{
+  "target_url": "https://app.example.com",
+  "authorization": {
+    "enabled": true,
+    "include_anonymous": true,
+    "contexts": [
+      {"id": "alice", "label": "Alice", "role": "USER", "privilege_rank": 0,
+       "authentication": {"mode": "BEARER_TOKEN", "token": "..."}},
+      {"id": "admin", "label": "Admin", "role": "ADMIN", "privilege_rank": 10,
+       "authentication": {"mode": "COOKIE",
+                          "cookies": [{"name": "session", "value": "..."}]}}
+    ],
+    "rules": [{"context_id": "alice", "resource": "/admin/*", "expected": "DENIED"}],
+    "ownership": [{"resource": "/api/orders/101", "owner": "alice"}]
+  }
+}
+```
+
+Credentials are accepted only on an authenticated scanner-user request and only
+in the body. A malformed identity or a rule naming an identity that was not
+supplied is a `422` on the request, not a failed scan — silently dropping such a
+rule would leave a boundary the user believes is under test.
+
+### Database
+
+Two things were added and neither is secret: an `AUTHORIZATION` value on the
+`finding_category` enum, and coverage counters plus the user-chosen identity
+labels on `scans`. Credentials follow phase 11 exactly — memory for the length
+of the scan, never a column, never a row.
+
+---
+
 ## API overview
 
 All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
@@ -1551,7 +1818,7 @@ All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
 
 | Method | Path | Auth | Description |
 | ------ | ---- | ---- | ----------- |
-| POST   | `/api/scans` | yes | Create and run a scan; optionally carries target credentials |
+| POST   | `/api/scans` | yes | Create and run a scan; optionally carries target credentials and authorization identities |
 | GET    | `/api/scans` | yes | List the caller's scans (`limit`, `offset`, `status`) |
 | GET    | `/api/scans/stats` | yes | Scan counts by status |
 | GET    | `/api/scans/{scan_id}` | yes | Read one scan |
@@ -1628,9 +1895,16 @@ the server and mirrored by Zod in the browser; the server is authoritative.
   assesses security headers and cookies, and runs conservative reflected-XSS and SQL-injection
   checks against discovered GET query parameters. That is the whole of it: no TLS analysis, no
   CORS analysis, no CSRF, SSRF, IDOR or open-redirect testing, and no authorization testing.
-* **No authorization or role testing.** One authentication context per scan. The scanner does not
-  compare users, roles or permission levels, and never checks whether one account can reach
-  another's data. An authenticated scan says what *that* context could reach, nothing more.
+* **Authorization testing needs a declared policy, and tests only what it is given.** The
+  scanner compares identities you supply and judges the result against expectations you write.
+  A resource nobody wrote a rule for is reported as unknown, never as a pass and never as a
+  finding — an application's access rules are not visible in its HTTP traffic, and guessing them
+  would produce confident nonsense.
+* **Authorization testing is read-only.** Only GET is sent. A boundary that exists solely on a
+  state-changing operation is not tested, because proving it would mean causing the side effect.
+* **No enumeration.** Resources tested are the ones the crawler reached plus the ones you named.
+  There is no identifier sweep and no path brute-forcer, so an object you did not name and the
+  crawl did not find is not examined.
 * **Target authentication is presented, never obtained.** Credentials are supplied by the
   authorized user. There is no login automation, no OAuth, no SAML, no MFA handling, no browser
   engine, and nothing that discovers, guesses or brute-forces a credential.
@@ -1728,10 +2002,10 @@ Planned, in order. Everything from Phase 3 onward is unimplemented.
 | 8 | Conservative SQL-injection detection (error-based + boolean) | done |
 | 9 | Reporting layer: canonical report, API, results page, JSON export | done |
 | 10 | Scan execution lifecycle: state machine, cancellation, progress | done |
-| 11 | Authorized authentication-aware scanning (bearer token, cookies) | **done - current release** |
-| 12 | TLS inspection, CORS policy, risk scoring | planned |
-| 13 | Further active testing: open redirect, API security checks | planned |
-| 14 | Authorization testing: roles, horizontal and vertical checks | planned |
+| 11 | Authorized authentication-aware scanning (bearer token, cookies) | done |
+| 12 | Authorization testing: anonymous, horizontal, vertical, object-level | **done - current release** |
+| 13 | TLS inspection, CORS policy, risk scoring | planned |
+| 14 | Further active testing: open redirect, API security checks | planned |
 | 15 | Additional export formats (PDF, SARIF), background execution | planned |
 
 The attack surface discovered in Phase 4 is what later detectors will consume: endpoints and

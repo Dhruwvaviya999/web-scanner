@@ -9,6 +9,10 @@ import { FullPageLoader } from "@/components/common/full-page-loader";
 import { PageHeader } from "@/components/common/page-header";
 import { FindingsSection } from "@/components/report/report-findings";
 import {
+  AuthorizationSummary,
+  fromReport,
+} from "@/components/scans/authorization-summary";
+import {
   CoverageSection,
   ReportHeader,
   ReportVerdict,
@@ -89,6 +93,8 @@ export default function ScanReportPage({ params }: PageProps<"/dashboard/scans/[
       <SeverityOverview severity={report.severity} />
 
       <CoverageSection coverage={report.coverage} attackSurface={report.attack_surface} />
+
+      <AuthorizationSummary view={fromReport(report.coverage.authorization)} />
 
       <FindingsSection findings={report.findings} />
 

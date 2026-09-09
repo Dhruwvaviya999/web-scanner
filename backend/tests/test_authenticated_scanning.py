@@ -769,11 +769,13 @@ def test_a_scan_response_carries_the_mode_and_status_but_no_secret(client):
         "status": "AVAILABLE",
         "enabled": True,
     }
-    # No credential-bearing field exists on this model at all. The mode name
-    # legitimately contains the word "token", so the check is on header names
-    # and on real secret values, not on the substring.
+    # No credential-bearing field exists on this model at all. Bare words are a
+    # poor check — the mode name contains "token" and the authorization coverage
+    # object is legitimately called "authorization" — so this asserts on the
+    # things that would actually constitute a leak: a header value, a cookie
+    # jar, or either real secret.
     lowered = response.text.lower()
-    for banned in ("authorization", "set-cookie", "\"cookies\"", "password"):
+    for banned in ("bearer ", "set-cookie", "\"cookies\"", "password"):
         assert banned not in lowered, banned
     assert TOKEN not in response.text
     assert COOKIE_VALUE not in response.text
@@ -798,7 +800,7 @@ def test_the_report_carries_the_mode_and_status_but_no_secret(client):
         "confirmed": True,
     }
     lowered = response.text.lower()
-    for banned in ("authorization", "set-cookie", "\"cookies\""):
+    for banned in ("bearer ", "set-cookie", "\"cookies\""):
         assert banned not in lowered, banned
     assert TOKEN not in response.text
     assert COOKIE_VALUE not in response.text

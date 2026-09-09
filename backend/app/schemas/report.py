@@ -36,6 +36,36 @@ class ReportAuthenticationRead(BaseModel):
     )
 
 
+class ReportAuthorizationRead(BaseModel):
+    """Authorization coverage. Structurally incapable of holding a secret."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    enabled: bool
+    contexts: int
+    context_labels: list[str] = Field(
+        default_factory=list,
+        description="User-chosen identity names. Never a credential.",
+    )
+    endpoints_eligible: int
+    endpoints_tested: int
+    comparisons: int
+    unknown: int = Field(
+        description=(
+            "Comparisons with no declared policy to judge against. These are not "
+            "findings, and a high count means the scan was not told what to expect."
+        )
+    )
+    skipped: int
+    failed: int
+    has_policy: bool = Field(
+        description=(
+            "True only when at least one comparison was measured against a "
+            "declared expectation."
+        )
+    )
+
+
 class ReportMetadataRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -79,6 +109,7 @@ class CoverageSummaryRead(BaseModel):
     scan_completed: bool = Field(
         description="Whether the run itself finished, as opposed to failing or being cancelled."
     )
+    authorization: ReportAuthorizationRead
     authentication_usable: bool = Field(
         description=(
             "False when credentials were supplied and the target refused them, so "

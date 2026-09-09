@@ -11,6 +11,10 @@ import { PageHeader } from "@/components/common/page-header";
 import { AttackSurfaceSection } from "@/components/attack-surface/attack-surface-section";
 import { FindingsSection } from "@/components/findings/findings-section";
 import { AuthenticationBadge } from "@/components/scans/authentication-badge";
+import {
+  AuthorizationSummary,
+  fromScan,
+} from "@/components/scans/authorization-summary";
 import { CancelScanDialog } from "@/components/scans/cancel-scan-dialog";
 import { DeleteScanDialog } from "@/components/scans/delete-scan-dialog";
 import { ScanProgress } from "@/components/scans/scan-progress";
@@ -210,6 +214,10 @@ export default function ScanDetailPage({ params }: PageProps<"/dashboard/scans/[
           <HttpInformation scan={scan} />
           <PageInformation scan={scan} />
         </>
+      ) : null}
+
+      {scan.authz_enabled ? (
+        <AuthorizationSummary view={fromScan(scan.authorization)} />
       ) : null}
 
       <FindingsSection

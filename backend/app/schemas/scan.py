@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 
@@ -28,6 +29,7 @@ from app.scanner.auth import (
     validate_mode_payload,
 )
 from app.scanner.auth import validate_bearer_token as _validate_bearer_token
+from app.scanner.authorization import AccessExpectation
 
 
 class ScanAuthCookie(BaseModel):
@@ -97,6 +99,156 @@ class ScanAuthenticationRead(BaseModel):
     enabled: bool = Field(description="Whether any credential was configured for this scan.")
 
 
+#: Identifier for the anonymous context the scanner adds itself. Reserved, so a
+#: user-supplied identity cannot collide with it and change what it means.
+ANONYMOUS_CONTEXT_ID = "anonymous"
+
+_CONTEXT_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+
+#: Separator for the stored context-label list. A unit separator cannot occur in
+#: a label, so a label containing a comma cannot split into two on read-back.
+LABEL_SEPARATOR = "\x1f"
+
+
+class ScanAuthorizationContext(BaseModel):
+    """One explicitly supplied testing identity.
+
+    Reuses `ScanAuthentication`, so credential validation, redaction and
+    transport are the phase-11 code paths rather than a second implementation.
+    """
+
+    id: str = Field(
+        min_length=1,
+        max_length=64,
+        description="Stable identifier used by the policy rules. Not a secret.",
+        examples=["alice"],
+    )
+    label: str = Field(min_length=1, max_length=120, examples=["Alice (customer)"])
+    role: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Free-text role label. Metadata: the scanner attaches no meaning to it.",
+        examples=["USER"],
+    )
+    privilege_rank: int = Field(
+        default=0,
+        ge=0,
+        le=100,
+        description=(
+            "Higher means more privileged. Used only to tell a vertical "
+            "comparison from a horizontal one, never to infer policy."
+        ),
+    )
+    authentication: ScanAuthentication
+
+    @field_validator("id")
+    @classmethod
+    def _validate_id(cls, value: str) -> str:
+        if value == ANONYMOUS_CONTEXT_ID:
+            raise ValueError(
+                "That id is reserved for the built-in anonymous context."
+            )
+        if not _CONTEXT_ID_RE.fullmatch(value):
+            raise ValueError(
+                "A context id may contain letters, digits, and the characters _ . : -"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _require_credentials(self) -> "ScanAuthorizationContext":
+        if self.authentication.mode is AuthMode.NONE:
+            raise ValueError(
+                "A named identity needs credentials. The unauthenticated case is "
+                "covered by the built-in anonymous context."
+            )
+        return self
+
+
+class ScanAuthorizationRule(BaseModel):
+    """One declared expectation. The scanner never invents these."""
+
+    context_id: str = Field(min_length=1, max_length=64)
+    resource: str = Field(
+        min_length=1,
+        max_length=512,
+        description="Path to match. A trailing * makes it a prefix.",
+        examples=["/admin/*"],
+    )
+    expected: AccessExpectation
+
+
+class ScanResourceOwnership(BaseModel):
+    """Which identity a specific resource belongs to."""
+
+    resource: str = Field(min_length=1, max_length=512, examples=["/api/orders/101"])
+    owner: str = Field(min_length=1, max_length=64, examples=["alice"])
+
+
+class ScanAuthorization(BaseModel):
+    """Authorization-testing configuration for one scan.
+
+    Nothing here is persisted beyond labels and counters. The credentials inside
+    each context follow the phase-11 path: memory only, for the length of the
+    scan.
+    """
+
+    enabled: bool = False
+    #: The scanner adds an anonymous identity so "is this protected at all?" is
+    #: always answerable. It carries no credential and cannot be given one.
+    include_anonymous: bool = True
+    contexts: list[ScanAuthorizationContext] = Field(default_factory=list, max_length=8)
+    rules: list[ScanAuthorizationRule] = Field(default_factory=list, max_length=200)
+    ownership: list[ScanResourceOwnership] = Field(default_factory=list, max_length=200)
+
+    @model_validator(mode="after")
+    def _validate(self) -> "ScanAuthorization":
+        if not self.enabled:
+            return self
+
+        ids = [context.id for context in self.contexts]
+        if len(set(ids)) != len(ids):
+            raise ValueError("Each authorization context needs a distinct id.")
+
+        # A comparison needs two sides. One named identity plus anonymous is the
+        # smallest useful configuration.
+        available = len(ids) + (1 if self.include_anonymous else 0)
+        if available < 2:
+            raise ValueError(
+                "Authorization testing needs at least two identities to compare. "
+                "Supply another identity, or keep the anonymous context."
+            )
+
+        known = set(ids)
+        if self.include_anonymous:
+            known.add(ANONYMOUS_CONTEXT_ID)
+        for rule in self.rules:
+            if rule.context_id not in known:
+                raise ValueError(f"Rule refers to unknown context {rule.context_id!r}.")
+        for entry in self.ownership:
+            if entry.owner not in known:
+                raise ValueError(f"Ownership refers to unknown context {entry.owner!r}.")
+        return self
+
+
+class ScanAuthorizationRead(BaseModel):
+    """Safe authorization coverage. Structurally incapable of holding a secret."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    enabled: bool
+    contexts: int | None = None
+    context_labels: list[str] = Field(default_factory=list)
+    endpoints_eligible: int | None = None
+    endpoints_tested: int | None = None
+    comparisons: int | None = None
+    unknown: int | None = Field(
+        default=None,
+        description="Comparisons with no declared policy to judge against. Not findings.",
+    )
+    skipped: int | None = None
+    failed: int | None = None
+
+
 class ScanCreate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -133,6 +285,14 @@ class ScanCreateWithAuth(ScanCreate):
         description=(
             "Optional credentials for the target application, supplied by the "
             "authorized user. Never stored, never returned."
+        ),
+    )
+    authorization: ScanAuthorization | None = Field(
+        default=None,
+        description=(
+            "Optional authorization testing: identities to compare and the access "
+            "policy they are measured against. Credentials are never stored or "
+            "returned."
         ),
     )
 
@@ -174,6 +334,18 @@ class ScanRead(BaseModel):
     auth_mode: AuthMode = AuthMode.NONE
     auth_status: AuthStatus = AuthStatus.NOT_CONFIGURED
 
+    # --- Authorization coverage. Counters and user-chosen labels only; there is
+    # no field on this model that could carry a credential.
+    authz_enabled: bool = False
+    authz_contexts: int | None = None
+    authz_context_labels: str | None = None
+    authz_endpoints_eligible: int | None = None
+    authz_endpoints_tested: int | None = None
+    authz_comparisons: int | None = None
+    authz_unknown: int | None = None
+    authz_skipped: int | None = None
+    authz_failed: int | None = None
+
     http_status_code: int | None
     response_time_ms: int | None
     final_url: str | None
@@ -207,6 +379,23 @@ class ScanRead(BaseModel):
     info_count: int | None
 
     error_message: str | None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def authorization(self) -> ScanAuthorizationRead:
+        """Authorization coverage, grouped. Contains no credential."""
+        raw = self.authz_context_labels or ""
+        return ScanAuthorizationRead(
+            enabled=self.authz_enabled,
+            contexts=self.authz_contexts,
+            context_labels=[label for label in raw.split(LABEL_SEPARATOR) if label],
+            endpoints_eligible=self.authz_endpoints_eligible,
+            endpoints_tested=self.authz_endpoints_tested,
+            comparisons=self.authz_comparisons,
+            unknown=self.authz_unknown,
+            skipped=self.authz_skipped,
+            failed=self.authz_failed,
+        )
 
     @computed_field  # type: ignore[prop-decorator]
     @property

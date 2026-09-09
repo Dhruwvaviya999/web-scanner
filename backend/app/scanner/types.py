@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     # Type-only: importing the auth package here at runtime would be circular,
     # since building an auth context needs this module's URL validator.
     from app.scanner.auth.types import AuthOutcome
+    from app.scanner.authorization.types import AuthorizationOutcome
 
 
 class ScanErrorCode(str, Enum):
@@ -121,6 +122,10 @@ class ScanReport:
     #: check concluded. Safe metadata only — never the credential itself. None
     #: until the authentication stage has run.
     auth: "AuthOutcome | None" = None
+    #: What the authorization stage compared, and how much of it. Counters and
+    #: user-chosen labels only — never a credential, never a response body.
+    #: None until the stage has run.
+    authorization: "AuthorizationOutcome | None" = None
     #: Attack surface discovered by the crawler, when it ran.
     crawl: "CrawlResult | None" = None
     #: Per-endpoint analysis and the aggregated findings it produced.

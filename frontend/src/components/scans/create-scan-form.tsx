@@ -15,6 +15,13 @@ import {
   validateAuthenticationDraft,
   type AuthenticationDraft,
 } from "@/components/scans/authentication-fields";
+import {
+  AuthorizationFields,
+  EMPTY_AUTHORIZATION,
+  toAuthorizationPayload,
+  validateAuthorizationDraft,
+  type AuthorizationDraft,
+} from "@/components/scans/authorization-fields";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ApiError } from "@/lib/errors";
@@ -41,6 +48,10 @@ export function CreateScanForm({ onCreated }: { onCreated?: (scan: Scan) => void
   // `finally` below, so a secret does not outlive the request that used it.
   const [authentication, setAuthentication] = useState<AuthenticationDraft>(EMPTY_AUTHENTICATION);
   const [authError, setAuthError] = useState<string | undefined>();
+  // Authorization identities carry credentials too, so this state is cleared on
+  // exactly the same paths as the single-identity draft above.
+  const [authorization, setAuthorization] = useState<AuthorizationDraft>(EMPTY_AUTHORIZATION);
+  const [authzError, setAuthzError] = useState<string | undefined>();
 
   const {
     register,
@@ -59,13 +70,20 @@ export function CreateScanForm({ onCreated }: { onCreated?: (scan: Scan) => void
       setAuthError(authMessage);
       return;
     }
+    const authzMessage = validateAuthorizationDraft(authorization);
+    if (authzMessage) {
+      setAuthzError(authzMessage);
+      return;
+    }
     setAuthError(undefined);
+    setAuthzError(undefined);
     setScanning(values.target_url);
 
     try {
       const scan = await scanService.create({
         ...values,
         authentication: toAuthenticationPayload(authentication),
+        authorization: toAuthorizationPayload(authorization),
       });
       reset();
 
@@ -91,7 +109,13 @@ export function CreateScanForm({ onCreated }: { onCreated?: (scan: Scan) => void
 
       // The message comes from the API, which describes what was wrong with the
       // credential without ever repeating it.
-      const authMessage = apiError?.fieldErrors().authentication;
+      const fields = apiError?.fieldErrors() ?? {};
+      const authzMessage = fields.authorization ?? fields["authorization.contexts"];
+      if (authzMessage) {
+        setAuthzError(authzMessage);
+        return;
+      }
+      const authMessage = fields.authentication;
       if (authMessage) {
         setAuthError(authMessage);
         return;
@@ -105,6 +129,7 @@ export function CreateScanForm({ onCreated }: { onCreated?: (scan: Scan) => void
       // Cleared on every path — success, API rejection, or network failure — so
       // a credential is never left sitting in a mounted component.
       setAuthentication(EMPTY_AUTHENTICATION);
+      setAuthorization(EMPTY_AUTHORIZATION);
     }
   });
 
@@ -147,6 +172,16 @@ export function CreateScanForm({ onCreated }: { onCreated?: (scan: Scan) => void
         }}
         disabled={isSubmitting}
         error={authError}
+      />
+
+      <AuthorizationFields
+        value={authorization}
+        onChange={(next) => {
+          setAuthorization(next);
+          setAuthzError(undefined);
+        }}
+        disabled={isSubmitting}
+        error={authzError}
       />
 
       {isSubmitting && scanning ? (

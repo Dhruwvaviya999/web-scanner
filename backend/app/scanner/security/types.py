@@ -57,6 +57,9 @@ class FindingCategory(str, enum.Enum):
     #: SQL injection. Phase 8 emits error-based and boolean-differential.
     SQLI = "SQLI"
     TLS = "TLS"
+    #: Broken access control. Phase 12 emits anonymous, horizontal, vertical and
+    #: object-level findings, all from comparisons across supplied identities.
+    AUTHORIZATION = "AUTHORIZATION"
     INFORMATION_DISCLOSURE = "INFORMATION_DISCLOSURE"
     OTHER = "OTHER"
 
@@ -93,6 +96,17 @@ class FindingRule(str, enum.Enum):
     SQLI_ERROR_BASED = "SQLI_ERROR_BASED"
     #: SQL injection surfaced by a reproducible true/false response difference.
     SQLI_BOOLEAN_DIFFERENTIAL = "SQLI_BOOLEAN_DIFFERENTIAL"
+
+    # --- Authorization / access control ---
+    #: A resource the policy reserves for authenticated users was served to an
+    #: anonymous request.
+    AUTHZ_ANONYMOUS_ACCESS = "AUTHZ_ANONYMOUS_ACCESS"
+    #: One identity reached a resource belonging to another at the same level.
+    AUTHZ_HORIZONTAL_ACCESS = "AUTHZ_HORIZONTAL_ACCESS"
+    #: A lower-privilege identity reached a higher-privilege resource.
+    AUTHZ_VERTICAL_ACCESS = "AUTHZ_VERTICAL_ACCESS"
+    #: An object whose declared owner is a different identity was served.
+    AUTHZ_OBJECT_LEVEL_ACCESS = "AUTHZ_OBJECT_LEVEL_ACCESS"
 
     # --- Cookies ---
     COOKIE_SECURE_MISSING = "COOKIE_SECURE_MISSING"

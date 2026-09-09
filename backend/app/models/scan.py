@@ -125,6 +125,27 @@ class Scan(Base, TimestampMixin):
         String(32), nullable=False, default="NOT_CONFIGURED", server_default="NOT_CONFIGURED"
     )
 
+    # --- Authorization testing (phase 12) ---
+    # Coverage counters and nothing else. The identities used are supplied per
+    # scan and their credentials live only in memory, exactly as in phase 11 —
+    # there is no column here, or anywhere, for one. `authz_context_labels`
+    # holds user-chosen display names such as "alice" or "admin", which are
+    # metadata about the test, not about the credential.
+    authz_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    #: NULL when the stage did not run, which stays distinct from "ran and
+    #: compared nothing" — the same convention as the phase 4/5 counters.
+    authz_contexts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    authz_context_labels: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    authz_endpoints_eligible: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    authz_endpoints_tested: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    authz_comparisons: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: Comparisons with no declared policy to judge against. Not vulnerabilities.
+    authz_unknown: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    authz_skipped: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    authz_failed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # --- Basic HTTP probe result ---
     # All nullable: a scan that failed, or has not run yet, has none of them.
     http_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)

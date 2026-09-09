@@ -16,6 +16,9 @@ from collections.abc import Callable
 from app.scanner.analysis.module import EndpointAnalysisModule
 from app.scanner.auth.health import AuthenticationCheckModule
 from app.scanner.auth.types import AuthenticationContext
+from app.scanner.authorization.matrix import AuthorizationPlan
+from app.scanner.authorization.module import AuthorizationModule
+from app.scanner.authorization.types import AuthorizationConfig
 from app.scanner.cancellation import CancellationToken, ScanCancelled
 from app.scanner.active.module import ActiveScanConfig, ActiveScanModule
 from app.scanner.active.types import ActiveDetector
@@ -46,7 +49,14 @@ class WebScanner:
         cancellation: CancellationToken | None = None,
         on_module_start: "Callable[[str], None] | None" = None,
         authentication: AuthenticationContext | None = None,
+        authz_config: AuthorizationConfig | None = None,
+        authorization: AuthorizationPlan | None = None,
     ) -> None:
+        # Authorization testing: identities and the policy they are measured
+        # against, both supplied by the authorized user. Disabled unless at
+        # least two identities were given, since a comparison needs two sides.
+        self._authz_config = authz_config or AuthorizationConfig()
+        self._authorization = authorization or AuthorizationPlan()
         # Target authentication, supplied by the authorized user for their own
         # application. Held once, at the top, and handed down to the transport
         # each module builds — never to a detector.
@@ -97,6 +107,14 @@ class WebScanner:
                     self._detectors,
                     self._cancellation,
                     self._authentication,
+                ),
+                # Last: it compares identities against the surface every earlier
+                # stage discovered, and adds no surface of its own.
+                AuthorizationModule(
+                    self._config,
+                    self._authz_config,
+                    self._authorization,
+                    self._cancellation,
                 ),
             ]
         )
