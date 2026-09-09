@@ -60,6 +60,9 @@ class FindingCategory(str, enum.Enum):
     #: Broken access control. Phase 12 emits anonymous, horizontal, vertical and
     #: object-level findings, all from comparisons across supplied identities.
     AUTHORIZATION = "AUTHORIZATION"
+    #: API-specific weaknesses read from responses earlier phases already
+    #: fetched: exposed fields, verbose errors, unsafe CORS, inventory drift.
+    API_SECURITY = "API_SECURITY"
     INFORMATION_DISCLOSURE = "INFORMATION_DISCLOSURE"
     OTHER = "OTHER"
 
@@ -96,6 +99,23 @@ class FindingRule(str, enum.Enum):
     SQLI_ERROR_BASED = "SQLI_ERROR_BASED"
     #: SQL injection surfaced by a reproducible true/false response difference.
     SQLI_BOOLEAN_DIFFERENTIAL = "SQLI_BOOLEAN_DIFFERENTIAL"
+
+    # --- API security (phase 14) ---
+    #: A sensitive field name appeared in an API response where no client
+    #: should have received it.
+    API_SENSITIVE_DATA_EXPOSURE = "API_SENSITIVE_DATA_EXPOSURE"
+    #: One identity received properties another did not, and the policy says it
+    #: should not have. Property-level authorization, not resource-level.
+    API_PROPERTY_AUTHORIZATION = "API_PROPERTY_AUTHORIZATION"
+    #: An error response carried diagnostics meant for a developer.
+    API_VERBOSE_ERROR = "API_VERBOSE_ERROR"
+    #: A cross-origin policy that grants more than it can have intended.
+    API_CORS_MISCONFIGURATION = "API_CORS_MISCONFIGURATION"
+    #: A response header naming internal software, versions or diagnostics.
+    API_INFORMATION_DISCLOSURE = "API_INFORMATION_DISCLOSURE"
+    #: Several API versions live at once, or documentation and service
+    #: disagreeing about what exists. Informational: normal during a migration.
+    API_LEGACY_VERSION = "API_LEGACY_VERSION"
 
     # --- Authorization / access control ---
     #: A resource the policy reserves for authenticated users was served to an

@@ -135,6 +135,18 @@ class Settings(BaseSettings):
     API_MAX_JSON_FIELDS: int = Field(default=50, gt=0, le=200)
     API_MAX_JSON_DEPTH: int = Field(default=6, gt=0, le=20)
 
+    # --- API security analysis (phase 14) ---
+    # Read-only. The stage sends no request of its own: it reads the field
+    # names, headers and error signals earlier phases already captured.
+    API_SECURITY_ENABLED: bool = True
+    API_SECURITY_MAX_ENDPOINTS: int = Field(default=500, gt=0, le=5000)
+    API_SECURITY_MAX_FIELDS_PER_ENDPOINT: int = Field(default=50, gt=0, le=200)
+    API_SECURITY_MAX_PROPERTY_COMPARISONS: int = Field(default=200, gt=0, le=2000)
+    #: Whether plaintext HTTP is reported as a weakness. Off by default: every
+    #: local fixture and development target is HTTP, and calling that a
+    #: production TLS failure would be wrong far more often than right.
+    API_SECURITY_FLAG_PLAINTEXT_HTTP: bool = False
+
     @field_validator("JWT_SECRET_KEY")
     @classmethod
     def _reject_placeholder_secret(cls, value: str) -> str:

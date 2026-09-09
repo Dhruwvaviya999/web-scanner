@@ -20,6 +20,7 @@ from app.reporting.types import (
     CoverageSummary,
     ReportApiDocument,
     ReportApiEndpoint,
+    ReportApiSecurity,
     ReportApiParameter,
     ReportApiSurface,
     ReportAuthentication,
@@ -202,6 +203,30 @@ def _coverage(
         authentication_usable=scan.auth_status != AuthStatus.REJECTED.value,
         authorization=_authorization(scan),
         api=_api_surface(scan, api_endpoints, api_documents),
+        api_security=_api_security(scan),
+    )
+
+
+def _api_security(scan: Scan) -> ReportApiSecurity:
+    """API security coverage from the stored counters.
+
+    `or 0` throughout: a NULL counter means the stage never reached that number,
+    which for a report is the same as zero. `analyzed` is what separates "found
+    nothing" from "was never asked to look".
+    """
+    return ReportApiSecurity(
+        analyzed=bool(scan.api_sec_analyzed),
+        endpoints_analyzed=scan.api_sec_endpoints_analyzed or 0,
+        endpoints_skipped=scan.api_sec_endpoints_skipped or 0,
+        responses_analyzed=scan.api_sec_responses_analyzed or 0,
+        sensitive_fields_detected=scan.api_sec_sensitive_fields or 0,
+        property_comparisons=scan.api_sec_property_comparisons or 0,
+        verbose_errors=scan.api_sec_verbose_errors or 0,
+        cors_checks=scan.api_sec_cors_checks or 0,
+        inventory_observations=scan.api_sec_inventory_observations or 0,
+        contexts_analyzed=scan.api_sec_contexts_analyzed or 0,
+        unknown_policy=scan.api_sec_unknown_policy or 0,
+        findings_count=scan.api_sec_findings or 0,
     )
 
 

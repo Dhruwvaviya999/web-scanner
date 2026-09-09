@@ -49,6 +49,7 @@ from app.models.user import User
 from app.scanner import CrawlConfig, ScannerConfig, ScanReport, WebScanner
 from app.scanner.auth import AuthenticationContext, AuthMode, AuthStatus
 from app.scanner.api.types import ApiDiscoveryConfig, ApiDiscoveryLimits
+from app.scanner.api_security.types import ApiSecurityConfig, ApiSecurityLimits
 from app.scanner.authorization import AuthorizationConfig, AuthorizationBudgetLimits
 from app.scanner.authorization.matrix import AuthorizationPlan
 from app.scanner.security.types import FindingSeverity
@@ -86,6 +87,7 @@ MODULE_STAGE: dict[str, ScanStage] = {
     "crawler": ScanStage.CRAWLING,
     "endpoint_analysis": ScanStage.ANALYZING,
     "api_discovery": ScanStage.API_DISCOVERY,
+    "api_security": ScanStage.API_SECURITY,
     "active_scan": ScanStage.ANALYZING,
     "authorization": ScanStage.AUTHORIZATION,
 }
@@ -143,6 +145,23 @@ def _api_config() -> ApiDiscoveryConfig:
             max_json_fields=settings.API_MAX_JSON_FIELDS,
             max_json_depth=settings.API_MAX_JSON_DEPTH,
         ),
+    )
+
+
+def _api_security_config() -> ApiSecurityConfig:
+    """Bounds for API security analysis.
+
+    There is no request budget to spend here: the stage reads what earlier
+    phases captured. The limits bound how much of that it retains.
+    """
+    return ApiSecurityConfig(
+        enabled=settings.API_SECURITY_ENABLED,
+        limits=ApiSecurityLimits(
+            max_endpoints=settings.API_SECURITY_MAX_ENDPOINTS,
+            max_fields_per_endpoint=settings.API_SECURITY_MAX_FIELDS_PER_ENDPOINT,
+            max_property_comparisons=settings.API_SECURITY_MAX_PROPERTY_COMPARISONS,
+        ),
+        flag_plaintext_http=settings.API_SECURITY_FLAG_PLAINTEXT_HTTP,
     )
 
 
@@ -321,6 +340,7 @@ def execute_scan(
             authz_config=_authorization_config(),
             authorization=authorization,
             api_config=_api_config(),
+            api_security_config=_api_security_config(),
         ).scan_sync(target_url)
     except Exception:  # noqa: BLE001 - the scan must not be left RUNNING
         logger.exception("Scan %s raised while running", scan_id)
@@ -383,6 +403,7 @@ def _finish(scan_id: uuid.UUID, report: ScanReport, stage: _StageTracker) -> Sca
         api_surface_service.replace_api_surface(
             db, scan, report.api, endpoints_by_url
         )
+        _apply_api_security(scan, report)
 
         aggregated = report.analysis.findings if report.analysis else []
         finding_service.replace_findings(db, scan, aggregated, endpoints_by_url)
@@ -524,6 +545,32 @@ def _apply_authorization(scan: Scan, report: ScanReport) -> None:
     scan.authz_failed = outcome.failed
     if outcome.context_labels:
         scan.authz_context_labels = LABEL_SEPARATOR.join(outcome.context_labels)[:512]
+
+
+def _apply_api_security(scan: Scan, report: ScanReport) -> None:
+    """Record what the API security stage read.
+
+    Counters only. The observations themselves carry field names, header values
+    and signal categories — never a value, a credential or an excerpt — and the
+    findings they produced have already gone into the shared aggregation.
+    """
+    result = report.api_security
+    if result is None:
+        return
+
+    stats = result.stats
+    scan.api_sec_analyzed = bool(stats.endpoints_analyzed or stats.responses_analyzed)
+    scan.api_sec_endpoints_analyzed = stats.endpoints_analyzed
+    scan.api_sec_endpoints_skipped = stats.endpoints_skipped
+    scan.api_sec_responses_analyzed = stats.responses_analyzed
+    scan.api_sec_sensitive_fields = stats.sensitive_fields_detected
+    scan.api_sec_property_comparisons = stats.property_comparisons
+    scan.api_sec_verbose_errors = stats.verbose_errors
+    scan.api_sec_cors_checks = stats.cors_checks
+    scan.api_sec_inventory_observations = stats.inventory_observations
+    scan.api_sec_contexts_analyzed = stats.contexts_analyzed
+    scan.api_sec_unknown_policy = stats.unknown_policy
+    scan.api_sec_findings = stats.findings_count
 
 
 def _apply_probe(scan: Scan, report: ScanReport) -> None:

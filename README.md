@@ -299,7 +299,7 @@ Always change the schema through a migration; never edit the database by hand.
 
 ```bash
 cd backend
-.venv\Scripts\python -m pytest          # 669 tests
+.venv\Scripts\python -m pytest          # 776 tests
 ```
 
 | Suite | Covers |
@@ -326,6 +326,7 @@ cd backend
 | `test_authenticated_scanning.py` | Credential validation, origin scope, transport, authenticated discovery, leakage |
 | `test_authorization_testing.py` | Policy matching, access comparison, horizontal/vertical/object-level checks, budget, leakage |
 | `test_api_discovery.py` | API classification, JSON structure, OpenAPI/Swagger parsing, GraphQL detection, budgets, leakage |
+| `test_api_security.py` | Field classification and its false-positive controls, property comparison, verbose errors, CORS, inventory, leakage |
 
 The detector and crawler suites need no network: the crawler's page fetcher is injected, so
 limits, cycles and failure handling are deterministic. The API suites drive the real app through
@@ -1978,6 +1979,173 @@ links to it and no published specification will not appear.
 
 ---
 
+## API security baseline and sensitive data exposure (Phase 14)
+
+Phase 13 built an inventory of a target's APIs. Phase 14 reads those same
+responses for weaknesses — and reads is the operative word. **It sends nothing.**
+
+Every input already exists by the time this stage runs: the field names Phase 13
+summarised, the headers the crawler kept, error signals computed at capture, and
+the per-identity responses Phase 12 gathered while comparing access. A stage that
+generated traffic to find these things would be fuzzing, and this phase does not
+fuzz, does not provoke errors to read them, and does not send a single request of
+its own.
+
+### The rule that governs the phase
+
+**A field being present is not proof of a vulnerability.** Whether an API should
+return `phone` depends on what the application is for, and a scanner cannot know
+that. So three things are kept apart that are easy to blur:
+
+* **What was observed** — this field name appeared in this response.
+* **How sensitive the field is** — a property of the name, not of the context.
+* **Whether the context should have received it** — which only a declared
+  authorization policy can answer, and usually nobody declared one.
+
+Where no policy exists the verdict is `UNKNOWN_POLICY`: recorded, counted, and
+**not a finding**. On a real target that is the common outcome, and the report
+says so rather than manufacturing certainty.
+
+### Sensitive field classification
+
+A pure function from a name to a classification. It never sees a value — that is
+the point: the scanner can report that a response contained `password_hash`
+without ever having kept what was in it.
+
+The hard part is not matching, it is **not over-matching**. A naive search for
+"token" flags `token_type` (the literal string "Bearer"), `page_token` (a
+pagination cursor) and `requires_token` (a boolean). So the rules run from most
+to least precise:
+
+1. **Unambiguous negations** — `has_password`, `token_type`, `page_token`. Facts
+   about a credential, never a credential.
+2. **Exact matches** — the bulk of the table, and strong enough to outrank a
+   suffix: `database_url` ends in `_url` and is still a credential with a
+   hostname attached.
+3. **Suffix negations** — `_at`, `_count`, `_policy`, `_url`. `password_url` is a
+   link to a reset page.
+4. **Compound heads, as whole word runs** — `user_password_hash` matches;
+   `passwordless` and `tokenizer` do not.
+
+| Sensitivity | Meaning |
+| ----------- | ------- |
+| `HIGHLY_SENSITIVE` | A secret by construction: password hashes, private keys, access tokens, card numbers, connection strings. |
+| `POTENTIALLY_SENSITIVE` | Sensitive in some contexts and ordinary in others: a phone number in a staff directory, an address on an order. |
+| `UNKNOWN` | Nothing about the name suggests sensitivity. |
+
+Sensitivity is a property of the *name*. Severity comes from the context.
+
+### When exposure becomes a finding
+
+Two paths, and only two:
+
+**Some fields are never legitimate.** A password hash, a salt, a private key or
+a connection string in a JSON body is a defect whoever asked for it — no product
+exists in which a client is supposed to receive one. Those produce a finding with
+no policy required, because no policy could make them correct.
+
+**Everything else needs evidence.** A token returned to an anonymous request is a
+finding; the same token returned to an authenticated one is how a sign-in
+endpoint works, and needs the declared policy to say the context should not have
+had the resource. Personal data with no policy behind it is an observation.
+
+### Property-level authorization
+
+Phase 12 established who could *reach* a resource. Phase 14 asks what each
+identity was handed once inside — OWASP's broken object property level
+authorization — using the responses Phase 12 already fetched. **No request is
+repeated:** the authorization module records the field names it saw, and this
+stage correlates them.
+
+```
+USER   -> {id, name, email}
+ADMIN  -> {id, name, email, salary, internal_notes}
+```
+
+That difference alone is not a defect; an administrator seeing more is the system
+working. It becomes one when the extra fields are of a kind no client should hold,
+or when the declared policy says this identity should not have had the resource.
+The reference for each comparison is the **least**-privileged identity that
+received a body, so the question is always "what did this identity get *beyond*
+the baseline" rather than "why does the admin see more".
+
+### Verbose errors
+
+Read from failures the scan already ran into while crawling and reading
+documentation. Categories only — `STACK_TRACE`, `DATABASE_ERROR`,
+`SQL_STATEMENT`, `FRAMEWORK_DEBUG` — and never the text that matched, so a
+finding reporting a stack trace does not become one.
+
+Only responses at 400 and above are scanned. Searching every successful page for
+exception-shaped text is both wasteful and a reliable false positive: a blog post
+about `SELECT` statements is not a database error. One *strong* signal is
+conclusive; a lone filesystem path is not, and two weak signals together are.
+
+A generic `{"detail": "Not Found"}` produces nothing, which is the point.
+
+### CORS, read from headers already received
+
+**No `Origin` header is forged to probe CORS** — that is active testing.
+
+| Configuration | Verdict |
+| ------------- | ------- |
+| No CORS headers | Not a weakness. CORS is not required for every API. |
+| `*` without credentials | Ordinary. This is what public APIs look like. |
+| `*` **with** credentials | Unsafe — browsers refuse it, so shipping it means the policy was never exercised. |
+| `null` with credentials | Unsafe — a sandboxed document can present that origin. |
+| A named origin with credentials, no `Vary: Origin` | Low: a shared cache can serve one origin's credentialed response to another. |
+
+### Header disclosure
+
+`Server: nginx` tells an attacker nothing they could not guess and is ignored.
+`Server: nginx/1.18.0` names the advisories to read and is reported at LOW.
+Diagnostic headers are reported at any value. `Authorization`, `Cookie` and
+`Set-Cookie` are structurally excluded: a disclosure finding must not become the
+disclosure.
+
+### API inventory
+
+Several versions live at once is what a migration looks like from outside, and
+calling it a vulnerability would be guessing at a roadmap. Recorded at **INFO**,
+along with documentation that has drifted from the service in either direction.
+OWASP treats inventory management as an API concern in its own right, and knowing
+which surfaces are live is useful even when nothing is exploitable.
+
+### Findings
+
+| Rule | Severity |
+| ---- | -------- |
+| `API_SENSITIVE_DATA_EXPOSURE` | HIGH for secrets and anonymous exposure, MEDIUM for personal data |
+| `API_PROPERTY_AUTHORIZATION` | HIGH when the extra fields are secrets, else MEDIUM |
+| `API_VERBOSE_ERROR` | MEDIUM for a strong signal, LOW otherwise |
+| `API_CORS_MISCONFIGURATION` | MEDIUM, or LOW for a missing `Vary` |
+| `API_INFORMATION_DISCLOSURE` | LOW |
+| `API_LEGACY_VERSION` | INFO |
+
+All under category `API_SECURITY`, through the same aggregation, occurrence
+tracking and reporting as every other finding. **Nothing is CRITICAL:** the
+scanner observes structure and does not confirm exploitability. The Phase 3
+security-header findings are untouched and not duplicated.
+
+### What never reaches a finding
+
+Field names, categories, counts, status codes, header values already vetted as
+safe, and signal category names. Not a value, not a body, not an excerpt, not a
+credential. The evidence says:
+
+> Field `password_hash` was present in the JSON response for context 'user'.
+
+and never what was in it.
+
+### What Phase 14 does not do
+
+No API fuzzing. No `POST`, `PUT`, `PATCH` or `DELETE`. No request body. No
+GraphQL query. No credential attacks, no data extraction, no blind or time-based
+SQL injection. It provokes no error and sends no request of its own — every
+input was captured by an earlier phase.
+
+---
+
 ## API overview
 
 All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
@@ -2113,6 +2281,21 @@ the server and mirrored by Zod in the browser; the server is authoritative.
 * **JSON structure is summarised, never stored.** Field names are kept because they describe the
   interface; no value from any response is retained, and both the field list and the depth walked
   are bounded, so a truncated summary is reported as truncated rather than as the whole shape.
+* **API security analysis judges names, not data.** It classifies field *names* and reads headers
+  and error signals; it never inspects a value. A field called `phone` is treated the same
+  whether it holds a phone number or an empty string, and a field holding a secret under an
+  innocuous name is not detected at all.
+* **Most sensitive-field observations are unjudgeable without a policy.** Whether an API should
+  return a given field depends on the application, so unless the field is a secret by
+  construction — a password hash, a private key, a connection string — the scanner needs a
+  declared authorization policy to call it wrong. Without one the result is `UNKNOWN_POLICY`:
+  recorded and counted, and neither a finding nor a clean result.
+* **Verbose-error detection is passive and partial.** Only responses the scan already provoked
+  naturally are examined, and only above status 400. An endpoint that returns a debug page under
+  conditions the scan never met is not seen, because reaching it would mean sending payloads.
+* **CORS is judged from headers alone.** No `Origin` header is forged, so a policy that reflects
+  arbitrary origins back is only detected when the response the scan already received happens to
+  show it.
 * **Vendor `+json` media types are classified but not summarised.** The transport downloads
   bodies for `application/json` and `text/*` but not for suffixed vendor types, so an endpoint
   serving `application/vnd.example+json` is correctly identified as an API from its header while
@@ -2217,10 +2400,11 @@ Planned, in order. Everything from Phase 3 onward is unimplemented.
 | 10 | Scan execution lifecycle: state machine, cancellation, progress | done |
 | 11 | Authorized authentication-aware scanning (bearer token, cookies) | done |
 | 12 | Authorization testing: anonymous, horizontal, vertical, object-level | done |
-| 13 | API discovery: classification, OpenAPI/Swagger, GraphQL presence | **done - current release** |
-| 14 | TLS inspection, CORS policy, risk scoring | planned |
-| 15 | Further active testing: open redirect, API security checks | planned |
-| 16 | Additional export formats (PDF, SARIF), background execution | planned |
+| 13 | API discovery: classification, OpenAPI/Swagger, GraphQL presence | done |
+| 14 | API security baseline: sensitive data, verbose errors, CORS, inventory | **done - current release** |
+| 15 | TLS inspection and risk scoring | planned |
+| 16 | Further active testing: open redirect, CSRF | planned |
+| 17 | Additional export formats (PDF, SARIF), background execution | planned |
 
 The attack surface discovered in Phase 4 is what later detectors will consume: endpoints and
 their parameters are the injection points an XSS or SQL-injection check needs, and forms are

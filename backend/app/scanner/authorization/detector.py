@@ -45,6 +45,7 @@ def analyze_resource(
     responses: Mapping[str, RawHttpResponse | None],
     matrix: AuthorizationMatrix,
     config: AuthorizationConfig,
+    field_sets: Mapping[str, tuple[str, ...]] | None = None,
 ) -> list[AuthorizationObservation]:
     """Compare every context's access to one resource.
 
@@ -63,7 +64,17 @@ def analyze_resource(
     reference = _reference_context(url, contexts, responses, observed, matrix)
 
     return [
-        _observe(url, context, contexts, responses, observed, matrix, config, reference)
+        _observe(
+            url,
+            context,
+            contexts,
+            responses,
+            observed,
+            matrix,
+            config,
+            reference,
+            (field_sets or {}).get(context.id, ()),
+        )
         for context in contexts
     ]
 
@@ -115,6 +126,7 @@ def _observe(
     matrix: AuthorizationMatrix,
     config: AuthorizationConfig,
     reference: AuthorizationContext | None,
+    json_fields: tuple[str, ...] = (),
 ) -> AuthorizationObservation:
     response = responses.get(context.id)
     expected = matrix.expectation_for(context.id, url)
@@ -139,6 +151,7 @@ def _observe(
             verdict=verdict,
             equivalent_to_reference=equivalent_to_reference,
             fingerprint=observed_fingerprint,
+            json_fields=json_fields,
             detail=detail,
         )
 

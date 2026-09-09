@@ -91,6 +91,36 @@ class ReportApiDocumentRead(BaseModel):
     truncated: bool
 
 
+class ReportApiSecurityRead(BaseModel):
+    """API security coverage. Structurally incapable of holding a value."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    analyzed: bool
+    endpoints_analyzed: int
+    endpoints_skipped: int
+    responses_analyzed: int
+    sensitive_fields_detected: int
+    property_comparisons: int
+    verbose_errors: int
+    cors_checks: int
+    inventory_observations: int
+    contexts_analyzed: int
+    unknown_policy: int = Field(
+        description=(
+            "Sensitive-looking fields with no declared policy to judge them "
+            "against. Observations, not findings — and not a clean result either."
+        )
+    )
+    findings_count: int
+    judged: bool = Field(
+        description=(
+            "True when at least something was measured against a declared policy "
+            "rather than merely observed."
+        )
+    )
+
+
 class ReportApiSurfaceRead(BaseModel):
     """The API attack surface. No response body, no credential, no header."""
 
@@ -199,6 +229,7 @@ class CoverageSummaryRead(BaseModel):
     )
     authorization: ReportAuthorizationRead
     api: ReportApiSurfaceRead
+    api_security: ReportApiSecurityRead
     authentication_usable: bool = Field(
         description=(
             "False when credentials were supplied and the target refused them, so "

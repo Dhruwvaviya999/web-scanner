@@ -23,6 +23,7 @@ from collections.abc import Sequence
 import httpx
 
 from app.scanner.analysis.aggregator import aggregate_findings
+from app.scanner.api.parser import summarize_body
 from app.scanner.authorization.budget import AuthorizationBudget
 from app.scanner.authorization.detector import analyze_resource
 from app.scanner.authorization.findings import build_finding
@@ -167,8 +168,20 @@ class AuthorizationModule:
                     continue
 
                 stats.endpoints_tested += 1
+                # Field names from the bodies just fetched. Computed here, where
+                # the responses are already in hand, so the property-level
+                # analysis in phase 14 repeats no request.
+                field_sets = {
+                    context_id: _field_names(response)
+                    for context_id, response in responses.items()
+                }
                 for observation in analyze_resource(
-                    url, contexts, responses, self._plan.matrix, self._authz_config
+                    url,
+                    contexts,
+                    responses,
+                    self._plan.matrix,
+                    self._authz_config,
+                    field_sets,
                 ):
                     if not budget.reserve_comparison(url):
                         stats.note("comparison_limit")
@@ -248,6 +261,18 @@ class AuthorizationModule:
         return responses
 
 
+def _field_names(response) -> tuple[str, ...]:
+    """JSON field names from one response, or nothing. Never raises, never values."""
+    body = getattr(response, "body", None)
+    if not body:
+        return ()
+    try:
+        shape = summarize_body(body)
+    except Exception:  # noqa: BLE001 - a summary must never fail a scan
+        return ()
+    return shape.field_names if shape is not None else ()
+
+
 def _findings_from(
     observations: Sequence[AuthorizationObservation],
 ) -> list[tuple[str | None, FindingData]]:
@@ -291,6 +316,9 @@ def _record(
     report.authorization = AuthorizationOutcome.from_stats(
         stats, [context.display_name for context in contexts]
     )
+    # In-memory only: phase 12 persists counters, and these observations exist
+    # so the API security stage can read the field sets without re-fetching.
+    report.authorization_observations = tuple(observations)
     report.metadata["authorization_requests_sent"] = stats.requests_sent
     report.metadata["authorization_comparisons"] = stats.comparisons
     if stats.budget_exhausted:

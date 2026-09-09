@@ -197,6 +197,43 @@ class ReportApiSurface:
 
 
 @dataclass(frozen=True, slots=True)
+class ReportApiSecurity:
+    """What the API security stage read, and how much of it it could judge.
+
+    `unknown_policy` is the number to read first. A sensitive-looking field with
+    no declared policy behind it is an observation, not a finding — the scanner
+    saw something worth a human's attention and has no basis for calling it
+    wrong. A large count there means the scan needs an authorization policy, not
+    that the API is clean.
+    """
+
+    analyzed: bool = False
+    endpoints_analyzed: int = 0
+    endpoints_skipped: int = 0
+    responses_analyzed: int = 0
+    sensitive_fields_detected: int = 0
+    property_comparisons: int = 0
+    verbose_errors: int = 0
+    cors_checks: int = 0
+    inventory_observations: int = 0
+    contexts_analyzed: int = 0
+    unknown_policy: int = 0
+    findings_count: int = 0
+
+    @property
+    def judged(self) -> bool:
+        """Whether anything was measured against a declared policy.
+
+        False means the stage ran and observed, but every sensitive field it saw
+        was unjudgeable. Nothing about that supports "the API is fine".
+        """
+        return self.analyzed and (
+            self.findings_count > 0
+            or self.sensitive_fields_detected > self.unknown_policy
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ReportMetadata:
     """What was scanned, when, and how the scan ended."""
 
@@ -272,6 +309,10 @@ class CoverageSummary:
     #: API reconnaissance. A classification of the surface, not a test of it:
     #: discovering an API says nothing about whether it is secure.
     api: ReportApiSurface = field(default_factory=lambda: ReportApiSurface())
+    #: What the read-only API security review found in those same responses.
+    api_security: ReportApiSecurity = field(
+        default_factory=lambda: ReportApiSecurity()
+    )
 
     @property
     def is_complete(self) -> bool:

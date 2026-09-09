@@ -172,6 +172,10 @@ class AuthorizationObservation:
     #: reference. `None` when there was nothing to compare against.
     equivalent_to_reference: bool | None
     fingerprint: ResponseFingerprint | None
+    #: Field *names* this context received, when the body was JSON. Names only,
+    #: exactly as everywhere else — they are what lets phase 14 ask the
+    #: property-level question without repeating a single request.
+    json_fields: tuple[str, ...] = ()
     #: Safe, human-readable reason. Never response content.
     detail: str = ""
 

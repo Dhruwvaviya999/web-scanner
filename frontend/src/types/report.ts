@@ -100,6 +100,31 @@ export interface ReportApiSurface {
   documents: ReportApiDocument[];
 }
 
+/**
+ * What the read-only API security review found.
+ *
+ * `unknown_policy` is the number to read first. A sensitive-looking field with
+ * no declared policy behind it is an observation, not a finding — and not a
+ * clean result either. A high count means the scan needs an authorization
+ * policy, not that the API is fine.
+ */
+export interface ReportApiSecurity {
+  analyzed: boolean;
+  endpoints_analyzed: number;
+  endpoints_skipped: number;
+  responses_analyzed: number;
+  sensitive_fields_detected: number;
+  property_comparisons: number;
+  verbose_errors: number;
+  cors_checks: number;
+  inventory_observations: number;
+  contexts_analyzed: number;
+  unknown_policy: number;
+  findings_count: number;
+  /** True when something was measured against a declared policy, not just seen. */
+  judged: boolean;
+}
+
 export interface ReportMetadata {
   scan_id: string;
   target_url: string;
@@ -145,6 +170,8 @@ export interface CoverageSummary {
   authorization: ReportAuthorization;
   /** API reconnaissance: a classification of the surface, not a test of it. */
   api: ReportApiSurface;
+  /** The read-only API security review of those same responses. */
+  api_security: ReportApiSecurity;
   /**
    * True only when every discovered endpoint was analysed or deliberately
    * skipped, with no failures. A clean result with this false means the scan

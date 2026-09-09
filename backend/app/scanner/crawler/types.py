@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     # Type-only: the API package must not be imported at runtime here, or every
     # `crawler.types` import would pull the classifier in behind it.
     from app.scanner.api.types import JsonShape
+    from app.scanner.api_security.types import ErrorSignal
 
 
 class ParameterLocation(str, enum.Enum):
@@ -161,6 +162,11 @@ class CapturedResponse:
     set_cookie: tuple[str, ...] = ()
     #: Structure of a JSON body, when the response had one. Names only.
     json_shape: "JsonShape | None" = None
+    #: Which *kinds* of diagnostic an error response leaked — a stack trace, a
+    #: database error, a framework debug page. Category names only: no line, no
+    #: excerpt, nothing that could reproduce the disclosure being reported.
+    #: Empty for every response that did not fail.
+    error_signals: tuple["ErrorSignal", ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,7 +185,11 @@ class FetchedPage:
     headers: Mapping[str, str] = field(default_factory=dict)
     set_cookie: tuple[str, ...] = ()
 
-    def captured(self, json_shape: "JsonShape | None" = None) -> CapturedResponse:
+    def captured(
+        self,
+        json_shape: "JsonShape | None" = None,
+        error_signals: tuple["ErrorSignal", ...] = (),
+    ) -> CapturedResponse:
         """Reduce this page to what is safe to keep. The body is dropped here."""
         return CapturedResponse(
             url=self.url,
@@ -189,4 +199,5 @@ class FetchedPage:
             headers=self.headers,
             set_cookie=self.set_cookie,
             json_shape=json_shape,
+            error_signals=error_signals,
         )

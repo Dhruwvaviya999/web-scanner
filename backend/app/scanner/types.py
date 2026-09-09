@@ -20,8 +20,12 @@ if TYPE_CHECKING:
     # Type-only: importing the auth package here at runtime would be circular,
     # since building an auth context needs this module's URL validator.
     from app.scanner.api.types import ApiSurface
+    from app.scanner.api_security.types import ApiSecurityResult
     from app.scanner.auth.types import AuthOutcome
-    from app.scanner.authorization.types import AuthorizationOutcome
+    from app.scanner.authorization.types import (
+        AuthorizationObservation,
+        AuthorizationOutcome,
+    )
 
 
 class ScanErrorCode(str, Enum):
@@ -132,6 +136,14 @@ class ScanReport:
     #: Structure and counters only — never a response body. None until the
     #: stage has run.
     api: "ApiSurface | None" = None
+    #: What the API security stage read out of those responses: exposed field
+    #: names, verbose errors, unsafe CORS, inventory drift. None until it runs.
+    api_security: "ApiSecurityResult | None" = None
+    #: Per-identity authorization observations, in memory for the length of the
+    #: scan. They carry field *names* so the API security stage can ask the
+    #: property-level question without repeating a request; nothing here is
+    #: persisted, and phase 12 continues to store only its counters.
+    authorization_observations: tuple["AuthorizationObservation", ...] = ()
     #: Attack surface discovered by the crawler, when it ran.
     crawl: "CrawlResult | None" = None
     #: Per-endpoint analysis and the aggregated findings it produced.

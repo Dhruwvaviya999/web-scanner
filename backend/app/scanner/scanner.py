@@ -16,6 +16,8 @@ from collections.abc import Callable
 from app.scanner.analysis.module import EndpointAnalysisModule
 from app.scanner.api.module import ApiDiscoveryModule
 from app.scanner.api.types import ApiDiscoveryConfig
+from app.scanner.api_security.module import ApiSecurityModule
+from app.scanner.api_security.types import ApiSecurityConfig
 from app.scanner.auth.health import AuthenticationCheckModule
 from app.scanner.auth.types import AuthenticationContext
 from app.scanner.authorization.matrix import AuthorizationPlan
@@ -54,7 +56,11 @@ class WebScanner:
         authz_config: AuthorizationConfig | None = None,
         authorization: AuthorizationPlan | None = None,
         api_config: ApiDiscoveryConfig | None = None,
+        api_security_config: ApiSecurityConfig | None = None,
     ) -> None:
+        # API security analysis. Reads what the other stages captured; sends
+        # nothing of its own.
+        self._api_security_config = api_security_config or ApiSecurityConfig()
         # API reconnaissance. Classifies the discovered surface and reads any
         # specification the target publishes; exploits nothing.
         self._api_config = api_config or ApiDiscoveryConfig()
@@ -130,6 +136,16 @@ class WebScanner:
                     self._authz_config,
                     self._authorization,
                     self._cancellation,
+                ),
+                # Last of all: it reads the API surface, the captured responses
+                # and the authorization observations that every stage before it
+                # produced, and issues no request of its own.
+                ApiSecurityModule(
+                    self._config,
+                    self._api_security_config,
+                    self._cancellation,
+                    self._authorization,
+                    self._authentication.configured,
                 ),
             ]
         )

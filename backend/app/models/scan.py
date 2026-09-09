@@ -184,6 +184,33 @@ class Scan(Base, TimestampMixin):
     )
     api_graphql_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
+    # --- API security analysis (phase 14) ---
+    # Totals over what the stage read: field names, header values already vetted
+    # as safe, and error-signal category names. There is deliberately no column
+    # for a field value, a header credential or an excerpt of an error.
+    #
+    # NULL means the stage did not run, distinct from "ran and found nothing".
+    api_sec_analyzed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    api_sec_endpoints_analyzed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    api_sec_endpoints_skipped: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    api_sec_responses_analyzed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    api_sec_sensitive_fields: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    api_sec_property_comparisons: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    api_sec_verbose_errors: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    api_sec_cors_checks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    api_sec_inventory_observations: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    api_sec_contexts_analyzed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: Sensitive-looking fields with no declared policy to judge them against.
+    #: The common outcome on a real target, and never a finding.
+    api_sec_unknown_policy: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    api_sec_findings: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # --- Basic HTTP probe result ---
     # All nullable: a scan that failed, or has not run yet, has none of them.
     http_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)

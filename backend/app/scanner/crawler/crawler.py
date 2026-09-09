@@ -21,6 +21,7 @@ from collections.abc import Awaitable, Callable
 
 from app.scanner.api.parser import summarize_body
 from app.scanner.api.types import JsonShape
+from app.scanner.api_security.error_analyzer import safe_detect
 from app.scanner.cancellation import CancellationToken, ScanCancelled
 from app.scanner.crawler.html_parser import decode_html, extract_forms, extract_links
 from app.scanner.crawler.types import (
@@ -135,7 +136,15 @@ class Crawler:
             # no second request — and keeps only structure: a non-JSON body is
             # rejected on its first character.
             result.responses[endpoint.url] = page.captured(
-                json_shape=_safe_summary(page.body)
+                json_shape=_safe_summary(page.body),
+                # Only failed responses are scanned, and only for category
+                # names. Searching every successful page for exception-shaped
+                # text would be both wasteful and a reliable false positive.
+                error_signals=safe_detect(
+                    page.body,
+                    status_code=page.status_code,
+                    content_type=page.content_type,
+                ),
             )
 
             # Only documents carry links and forms; a JSON or image response is
