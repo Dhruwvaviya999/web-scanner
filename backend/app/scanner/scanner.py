@@ -14,6 +14,8 @@ import logging
 from collections.abc import Callable
 
 from app.scanner.analysis.module import EndpointAnalysisModule
+from app.scanner.auth.health import AuthenticationCheckModule
+from app.scanner.auth.types import AuthenticationContext
 from app.scanner.cancellation import CancellationToken, ScanCancelled
 from app.scanner.active.module import ActiveScanConfig, ActiveScanModule
 from app.scanner.active.types import ActiveDetector
@@ -43,7 +45,12 @@ class WebScanner:
         detectors: list[ActiveDetector] | None = None,
         cancellation: CancellationToken | None = None,
         on_module_start: "Callable[[str], None] | None" = None,
+        authentication: AuthenticationContext | None = None,
     ) -> None:
+        # Target authentication, supplied by the authorized user for their own
+        # application. Held once, at the top, and handed down to the transport
+        # each module builds — never to a detector.
+        self._authentication = authentication or AuthenticationContext.none()
         # Cooperative cancellation. The scanner never learns how the flag is
         # stored — it is handed a predicate and asks at safe boundaries.
         self._cancellation = cancellation or CancellationToken.none()
@@ -68,8 +75,18 @@ class WebScanner:
                 # Probe the seed, crawl from where it landed, then assess every
                 # endpoint the crawl captured. Analysis runs last because it
                 # consumes what the earlier stages produced.
-                HttpProbeModule(self._config),
-                CrawlModule(self._config, self._crawl_config, self._cancellation),
+                # Confirms the supplied credentials before a crawl is spent
+                # on them. Issues no request at all when none were supplied.
+                AuthenticationCheckModule(
+                    self._config, self._authentication, self._cancellation
+                ),
+                HttpProbeModule(self._config, self._authentication),
+                CrawlModule(
+                    self._config,
+                    self._crawl_config,
+                    self._cancellation,
+                    self._authentication,
+                ),
                 EndpointAnalysisModule(self._cancellation),
                 # Active probing runs last: it needs the discovered parameters,
                 # and its findings join the same aggregation. Adding a detector
@@ -79,6 +96,7 @@ class WebScanner:
                     self._active_config,
                     self._detectors,
                     self._cancellation,
+                    self._authentication,
                 ),
             ]
         )

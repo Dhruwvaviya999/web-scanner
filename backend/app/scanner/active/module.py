@@ -27,6 +27,7 @@ from app.scanner.active.types import (
     ProbeTarget,
 )
 from app.scanner.analysis.aggregator import aggregate_findings
+from app.scanner.auth.types import AuthenticationContext
 from app.scanner.cancellation import CancellationToken, ScanCancelled
 from app.scanner.crawler.url_normalizer import is_same_origin, origin_of
 from app.scanner.http_scanner import HttpFetcher, build_client
@@ -56,11 +57,13 @@ class ActiveScanModule:
         active_config: ActiveScanConfig,
         detectors: Sequence[ActiveDetector],
         cancellation: CancellationToken | None = None,
+        authentication: AuthenticationContext | None = None,
     ) -> None:
         self._config = config
         self._active_config = active_config
         self._detectors = list(detectors)
         self._cancellation = cancellation or CancellationToken.none()
+        self._authentication = authentication
 
     async def run(self, target: ScanTarget, report: ScanReport) -> None:
         if not self._active_config.enabled or not self._detectors:
@@ -90,6 +93,11 @@ class ActiveScanModule:
                 # A redirect leaving the origin is refused, not followed.
                 allow_url=lambda url: is_same_origin(url, origin),
                 max_redirects=self._config.max_redirects,
+                # One fetcher for the whole active stage, so a detector's
+                # baseline and its probes are always sent with the same
+                # authentication context. Comparing an authenticated baseline
+                # against an unauthenticated probe would manufacture findings.
+                authentication=self._authentication,
             )
             engine = ProbeEngine(fetcher, origin, budget, stats, self._cancellation)
 

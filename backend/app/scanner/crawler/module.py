@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 
+from app.scanner.auth.types import AuthenticationContext
 from app.scanner.cancellation import CancellationToken, ScanCancelled
 from app.scanner.crawler.crawler import Crawler
 from app.scanner.crawler.types import CrawlConfig, FetchedPage
@@ -37,10 +38,12 @@ class CrawlModule:
         config: ScannerConfig,
         crawl_config: CrawlConfig,
         cancellation: CancellationToken | None = None,
+        authentication: AuthenticationContext | None = None,
     ) -> None:
         self._config = config
         self._crawl_config = crawl_config
         self._cancellation = cancellation or CancellationToken.none()
+        self._authentication = authentication
 
     async def run(self, target: ScanTarget, report: ScanReport) -> None:
         if not self._crawl_config.enabled:
@@ -62,6 +65,11 @@ class CrawlModule:
                 # followed, so the crawl cannot be walked onto another host.
                 allow_url=lambda url: is_same_origin(url, origin),
                 max_redirects=self._crawl_config.max_redirects_per_page,
+                # Authenticated pages become part of the discovered surface. The
+                # BFS, the page and depth limits, the time budget and the
+                # same-origin rule are all untouched: only the request context
+                # changes.
+                authentication=self._authentication,
             )
             crawler = Crawler(
                 self._crawl_config, _network_fetcher(fetcher, origin), self._cancellation

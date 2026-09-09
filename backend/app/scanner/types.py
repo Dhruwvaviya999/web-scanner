@@ -10,11 +10,16 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from app.scanner.analysis.types import AnalysisResult
 from app.scanner.crawler.types import CrawlResult
 from app.scanner.security.types import FindingData
+
+if TYPE_CHECKING:
+    # Type-only: importing the auth package here at runtime would be circular,
+    # since building an auth context needs this module's URL validator.
+    from app.scanner.auth.types import AuthOutcome
 
 
 class ScanErrorCode(str, Enum):
@@ -112,6 +117,10 @@ class ScanReport:
     #: `error_code`: a cancelled scan is a normal outcome, not a failure, and
     #: whatever it managed to gather before stopping is still valid.
     cancelled: bool = False
+    #: How this scan authenticated to the target, and what the initial access
+    #: check concluded. Safe metadata only — never the credential itself. None
+    #: until the authentication stage has run.
+    auth: "AuthOutcome | None" = None
     #: Attack surface discovered by the crawler, when it ran.
     crawl: "CrawlResult | None" = None
     #: Per-endpoint analysis and the aggregated findings it produced.

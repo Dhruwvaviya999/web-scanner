@@ -5,6 +5,7 @@ import {
   CalendarClock,
   CheckCircle2,
   CircleSlash,
+  KeyRound,
   Globe2,
   ShieldQuestion,
   Timer,
@@ -18,6 +19,7 @@ import { cn } from "@/lib/utils";
 import { formatDateTime } from "@/lib/format";
 import { FINDING_SEVERITIES, type FindingSeverity } from "@/types/finding";
 import type { CoverageSummary, ReportMetadata, SeveritySummary } from "@/types/report";
+import { AUTH_MODE_LABELS, AUTH_STATUS_LABELS } from "@/types/scan";
 
 const SEVERITY_LABELS: Record<FindingSeverity, string> = {
   CRITICAL: "Critical",
@@ -60,7 +62,7 @@ export function ReportHeader({ metadata }: { metadata: ReportMetadata }) {
       <CardHeader>
         <CardTitle className="text-base">Executive summary</CardTitle>
       </CardHeader>
-      <CardContent className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <CardContent className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <MetaItem icon={Globe2} label="Target">
           <span className="font-mono" title={metadata.target_url}>
             {metadata.target_url}
@@ -74,6 +76,13 @@ export function ReportHeader({ metadata }: { metadata: ReportMetadata }) {
         </MetaItem>
         <MetaItem icon={ShieldQuestion} label="Status">
           {metadata.status}
+        </MetaItem>
+        <MetaItem icon={KeyRound} label="Authentication">
+          {metadata.authentication.authenticated
+            ? `${AUTH_MODE_LABELS[metadata.authentication.mode]} · ${
+                AUTH_STATUS_LABELS[metadata.authentication.status]
+              }`
+            : "Not configured"}
         </MetaItem>
       </CardContent>
     </Card>
@@ -107,6 +116,24 @@ export function ReportVerdict({
               {metadata.error_message ??
                 "The target could not be reached, so nothing was assessed."}{" "}
               No conclusion about this target can be drawn from this report.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (metadata.authentication.authenticated && metadata.authentication.status === "REJECTED") {
+    return (
+      <Card className="border-warning/40">
+        <CardContent className="flex items-start gap-3">
+          <AlertTriangle className="mt-0.5 size-5 shrink-0 text-warning" aria-hidden />
+          <div className="space-y-1 text-sm">
+            <p className="font-medium">The target refused the credentials supplied</p>
+            <p className="text-muted-foreground">
+              The scan ran, but as an anonymous visitor: everything behind the login was never
+              reached. Whatever this report does not list may simply never have been checked, so
+              it says nothing about the authenticated part of the application.
             </p>
           </div>
         </CardContent>
@@ -191,7 +218,10 @@ export function ReportVerdict({
           <p className="text-muted-foreground">
             {coverage.is_complete
               ? "Every endpoint that was discovered was analysed, and none of the checks in this scan reported an issue. That is not a proof of security: the scanner performs a specific, limited set of checks."
-              : "Some discovered endpoints were not analysed, so checks that might have reported an issue may never have run. Treat this result as inconclusive rather than clean."}
+              : "Some discovered endpoints were not analysed, so checks that might have reported an issue may never have run. Treat this result as inconclusive rather than clean."}{" "}
+            {metadata.authentication.authenticated
+              ? "Results reflect the endpoints reachable with the authentication context supplied — no other user, role or permission level was tested."
+              : "Authentication was not configured, so only the surface a signed-out visitor can reach was covered."}
           </p>
         </div>
       </CardContent>

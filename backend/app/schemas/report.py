@@ -14,7 +14,26 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.scanner.auth import AuthMode, AuthStatus
 from app.scanner.security.types import FindingCategory, FindingConfidence, FindingSeverity
+
+
+class ReportAuthenticationRead(BaseModel):
+    """How the scan authenticated. Structurally incapable of holding a secret."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    mode: AuthMode
+    status: AuthStatus
+    authenticated: bool = Field(
+        description="Whether any credential was configured for this scan."
+    )
+    confirmed: bool = Field(
+        description=(
+            "Whether one initial access check accepted the credentials. Not a "
+            "claim that they were valid for every path, or for the whole scan."
+        )
+    )
 
 
 class ReportMetadataRead(BaseModel):
@@ -34,6 +53,7 @@ class ReportMetadataRead(BaseModel):
         default=None,
         description="Stage a failed scan was in. A stage name only, never a trace.",
     )
+    authentication: ReportAuthenticationRead
     is_conclusive: bool = Field(
         description=(
             "True only when the scan ran to completion. A failed or cancelled scan "
@@ -58,6 +78,12 @@ class CoverageSummaryRead(BaseModel):
     crawl_limit_reached: bool | None
     scan_completed: bool = Field(
         description="Whether the run itself finished, as opposed to failing or being cancelled."
+    )
+    authentication_usable: bool = Field(
+        description=(
+            "False when credentials were supplied and the target refused them, so "
+            "only the anonymous surface was covered."
+        )
     )
     is_complete: bool = Field(
         description=(

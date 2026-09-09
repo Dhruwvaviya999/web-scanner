@@ -10,6 +10,7 @@ import { FullPageLoader } from "@/components/common/full-page-loader";
 import { PageHeader } from "@/components/common/page-header";
 import { AttackSurfaceSection } from "@/components/attack-surface/attack-surface-section";
 import { FindingsSection } from "@/components/findings/findings-section";
+import { AuthenticationBadge } from "@/components/scans/authentication-badge";
 import { CancelScanDialog } from "@/components/scans/cancel-scan-dialog";
 import { DeleteScanDialog } from "@/components/scans/delete-scan-dialog";
 import { ScanProgress } from "@/components/scans/scan-progress";
@@ -26,7 +27,7 @@ import { useAsyncData } from "@/hooks/use-async-data";
 import { SCAN_POLL_INTERVAL_MS, usePolling } from "@/hooks/use-polling";
 import { formatDateTime } from "@/lib/format";
 import { scanService } from "@/services/scan.service";
-import { isScanActive } from "@/types/scan";
+import { isAuthRejected, isScanActive } from "@/types/scan";
 
 export default function ScanDetailPage({ params }: PageProps<"/dashboard/scans/[id]">) {
   const { id } = use(params);
@@ -141,6 +142,7 @@ export default function ScanDetailPage({ params }: PageProps<"/dashboard/scans/[
         <CardContent className="space-y-4">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
             <ScanStatusBadge status={scan.status} cancelRequested={scan.cancel_requested} />
+            <AuthenticationBadge mode={scan.auth_mode} status={scan.auth_status} />
             <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted-foreground">
               <span>
                 Started <span className="text-foreground">{formatDateTime(scan.started_at)}</span>
@@ -163,6 +165,29 @@ export default function ScanDetailPage({ params }: PageProps<"/dashboard/scans/[
               }
               message={scan.error_message}
             />
+          ) : null}
+
+          {isAuthRejected(scan) ? (
+            <Alert>
+              <CircleSlash className="size-4" aria-hidden />
+              <AlertTitle>The target refused the credentials supplied</AlertTitle>
+              <AlertDescription>
+                This scan ran as an anonymous visitor, so it covers only what a signed-out user
+                can reach. Nothing behind the login was assessed — an empty result here says
+                nothing about the authenticated part of the application.
+              </AlertDescription>
+            </Alert>
+          ) : null}
+
+          {scan.auth_mode !== "NONE" && scan.auth_status === "UNKNOWN" ? (
+            <Alert>
+              <CircleSlash className="size-4" aria-hidden />
+              <AlertTitle>Authentication was configured but not confirmed</AlertTitle>
+              <AlertDescription>
+                The initial access check could not tell whether the credentials were accepted, so
+                treat the coverage below as uncertain rather than authenticated.
+              </AlertDescription>
+            </Alert>
           ) : null}
 
           {cancelled ? (
@@ -206,12 +231,15 @@ export default function ScanDetailPage({ params }: PageProps<"/dashboard/scans/[
         <CardContent className="space-y-2 text-sm">
           <p className="font-medium">Scope of this result</p>
           <p className="text-muted-foreground">
-            This scan fetched the target, recorded the response,
-            checked the response&apos;s security headers and cookies, then crawled the origin to
-            map its attack surface. No vulnerability testing was performed — no payloads were
-            sent, no forms were submitted, and no TLS, injection or CORS analysis was run.
-            Findings are configuration observations, not confirmed vulnerabilities, and their
-            absence does not mean the site is secure.
+            This scan fetched the target, recorded the response, checked its security headers and
+            cookies, crawled the same origin to map the attack surface, and ran bounded
+            reflected-XSS and SQL-injection checks against the query parameters it discovered. No
+            form was submitted, no data was extracted, and no TLS, CORS or authorisation testing
+            was performed. Findings are observations from those specific checks, not a
+            comprehensive audit, and their absence does not mean the site is secure.
+            {scan.auth_mode === "NONE"
+              ? " Authentication was not configured, so only the anonymous surface was reached."
+              : " Results reflect only the endpoints reachable with the authentication context supplied."}
           </p>
           <p className="pt-1 font-mono text-xs text-muted-foreground">Scan ID: {scan.id}</p>
         </CardContent>

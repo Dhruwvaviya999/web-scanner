@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from app.models.scan import ScanStatus
+from app.scanner.auth import AuthMode, AuthStatus
 from app.scanner.security.types import FindingCategory, FindingConfidence, FindingSeverity
 
 #: Severity ordering used everywhere in a report. Most severe first.
@@ -29,6 +30,34 @@ SEVERITY_RANK: dict[FindingSeverity, int] = {
     FindingSeverity.LOW: 3,
     FindingSeverity.INFO: 4,
 }
+
+
+@dataclass(frozen=True, slots=True)
+class ReportAuthentication:
+    """How the scan authenticated to the target.
+
+    Two enum values and nothing else. There is no field here that could hold a
+    token, a cookie value or a header, so the report's leakage guarantee is
+    structural rather than a matter of remembering to redact.
+    """
+
+    mode: str
+    status: str
+
+    @property
+    def authenticated(self) -> bool:
+        """Whether credentials were configured — not whether they worked."""
+        return self.mode != AuthMode.NONE.value
+
+    @property
+    def confirmed(self) -> bool:
+        """Whether one initial access check accepted the credentials.
+
+        Deliberately narrow. It says the origin answered a single request
+        without refusing it, not that the credentials were valid for every path
+        or for the whole scan.
+        """
+        return self.authenticated and self.status == AuthStatus.AVAILABLE.value
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +81,12 @@ class ReportMetadata:
     cancelled_at: datetime | None = None
     #: Which stage a failed scan was in. A stage name only, never a trace.
     failure_stage: str | None = None
+    #: Safe authentication metadata. Never the credential itself.
+    authentication: ReportAuthentication = field(
+        default_factory=lambda: ReportAuthentication(
+            mode=AuthMode.NONE.value, status=AuthStatus.NOT_CONFIGURED.value
+        )
+    )
 
     @property
     def is_conclusive(self) -> bool:
@@ -61,7 +96,14 @@ class ReportMetadata:
         only what the run reached before it stopped, so a reader must never take
         its emptiness as an all-clear.
         """
-        return self.status == ScanStatus.COMPLETED.value
+        if self.status != ScanStatus.COMPLETED.value:
+            return False
+        # Credentials were supplied and the target refused them. The scan ran to
+        # completion, but it ran as an anonymous visitor: everything behind the
+        # login was never looked at. Calling that conclusive would let a rejected
+        # credential read as a clean result, which is the exact failure mode
+        # authenticated scanning must not have.
+        return self.authentication.status != AuthStatus.REJECTED.value
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +127,9 @@ class CoverageSummary:
     #: Whether the run itself finished. A scan that failed or was cancelled
     #: stopped part-way by definition, however much it had analysed by then.
     scan_completed: bool = True
+    #: False when credentials were supplied and the target refused them. The
+    #: crawl then covered only the anonymous surface, whatever the counters say.
+    authentication_usable: bool = True
 
     @property
     def is_complete(self) -> bool:
@@ -93,9 +138,13 @@ class CoverageSummary:
         A report must not present a clean result as reassuring when coverage was
         partial, so this is what the "no findings" wording keys on. A scan that
         did not run to completion is never complete here, no matter what its
-        counters say: a cancelled run stopped before it knew what it had left.
+        counters say: a cancelled run stopped before it knew what it had left,
+        and a scan whose credentials were refused never saw the authenticated
+        surface at all.
         """
         if not self.scan_completed:
+            return False
+        if not self.authentication_usable:
             return False
         if self.endpoints_discovered is None or self.endpoints_analyzed is None:
             return False

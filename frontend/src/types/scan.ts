@@ -9,6 +9,52 @@ export const SCAN_STATUSES = [
 /** States a scan can still leave. Anything else is terminal. */
 export const ACTIVE_SCAN_STATUSES = ["QUEUED", "RUNNING"] as const;
 
+/**
+ * How a scan authenticates **to the target application**.
+ *
+ * Not the scanner's own login. This is a credential the user already holds for
+ * an application they are authorised to test. The scanner never discovers,
+ * guesses or brute-forces one.
+ */
+export const AUTH_MODES = ["NONE", "BEARER_TOKEN", "COOKIE"] as const;
+
+export type AuthMode = (typeof AUTH_MODES)[number];
+
+/** What one initial access check concluded about the supplied credential. */
+export const AUTH_STATUSES = [
+  "NOT_CONFIGURED",
+  "AVAILABLE",
+  "REJECTED",
+  "UNKNOWN",
+] as const;
+
+export type AuthStatus = (typeof AUTH_STATUSES)[number];
+
+export const AUTH_MODE_LABELS: Record<AuthMode, string> = {
+  NONE: "None",
+  BEARER_TOKEN: "Bearer token",
+  COOKIE: "Cookies",
+};
+
+export const AUTH_STATUS_LABELS: Record<AuthStatus, string> = {
+  NOT_CONFIGURED: "Not configured",
+  AVAILABLE: "Available",
+  REJECTED: "Rejected",
+  UNKNOWN: "Unconfirmed",
+};
+
+/**
+ * Safe authentication metadata for a scan.
+ *
+ * There is deliberately no field here for a token or a cookie value: the API
+ * never returns one, so the type cannot describe one.
+ */
+export interface ScanAuthenticationInfo {
+  mode: AuthMode;
+  status: AuthStatus;
+  enabled: boolean;
+}
+
 export type ScanStatus = (typeof SCAN_STATUSES)[number];
 
 export interface Scan {
@@ -36,6 +82,11 @@ export interface Scan {
   cancel_requested: boolean;
   /** Which stage a failed scan was in. A stage name only, never a trace. */
   failure_stage: string | null;
+
+  /** How the scan authenticated to the target. Metadata only — never a secret. */
+  auth_mode: AuthMode;
+  auth_status: AuthStatus;
+  authentication: ScanAuthenticationInfo;
 
   /** Basic HTTP probe result. Null until a scan completes, or when it failed. */
   http_status_code: number | null;
@@ -96,13 +147,33 @@ export function isScanActive(scan: Pick<Scan, "status">): boolean {
   return scan.status === "QUEUED" || scan.status === "RUNNING";
 }
 
+/** Whether credentials were supplied and the target refused them. */
+export function isAuthRejected(scan: Pick<Scan, "auth_mode" | "auth_status">): boolean {
+  return scan.auth_mode !== "NONE" && scan.auth_status === "REJECTED";
+}
+
 /** Whether a scan stopped before covering everything it could have. */
 export function isScanInconclusive(scan: Pick<Scan, "status">): boolean {
   return scan.status === "FAILED" || scan.status === "CANCELLED";
 }
 
+/**
+ * Target-authentication material for one scan.
+ *
+ * Sent once, in the body of the create request, over the same authenticated
+ * session as everything else. It is never placed in a URL, never written to
+ * localStorage or sessionStorage, and never read back from the API — the
+ * server has nowhere to return it from.
+ */
+export interface CreateScanAuthentication {
+  mode: AuthMode;
+  token?: string;
+  cookies?: { name: string; value: string }[];
+}
+
 export interface CreateScanPayload {
   target_url: string;
+  authentication?: CreateScanAuthentication;
 }
 
 export interface ListScansParams {

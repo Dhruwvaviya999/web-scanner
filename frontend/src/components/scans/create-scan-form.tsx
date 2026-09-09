@@ -8,6 +8,13 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { FieldError } from "@/components/common/field-error";
+import {
+  AuthenticationFields,
+  EMPTY_AUTHENTICATION,
+  toAuthenticationPayload,
+  validateAuthenticationDraft,
+  type AuthenticationDraft,
+} from "@/components/scans/authentication-fields";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ApiError } from "@/lib/errors";
@@ -30,6 +37,10 @@ export function CreateScanForm({ onCreated }: { onCreated?: (scan: Scan) => void
   // The URL currently being probed, kept separately so the progress panel keeps
   // showing it after the input has been cleared.
   const [scanning, setScanning] = useState<string | null>(null);
+  // Target credentials live here and nowhere else: this state is wiped in the
+  // `finally` below, so a secret does not outlive the request that used it.
+  const [authentication, setAuthentication] = useState<AuthenticationDraft>(EMPTY_AUTHENTICATION);
+  const [authError, setAuthError] = useState<string | undefined>();
 
   const {
     register,
@@ -43,9 +54,19 @@ export function CreateScanForm({ onCreated }: { onCreated?: (scan: Scan) => void
   });
 
   const onSubmit = handleSubmit(async (values) => {
+    const authMessage = validateAuthenticationDraft(authentication);
+    if (authMessage) {
+      setAuthError(authMessage);
+      return;
+    }
+    setAuthError(undefined);
     setScanning(values.target_url);
+
     try {
-      const scan = await scanService.create(values);
+      const scan = await scanService.create({
+        ...values,
+        authentication: toAuthenticationPayload(authentication),
+      });
       reset();
 
       if (scan.status === "FAILED") {
@@ -68,11 +89,22 @@ export function CreateScanForm({ onCreated }: { onCreated?: (scan: Scan) => void
         return;
       }
 
+      // The message comes from the API, which describes what was wrong with the
+      // credential without ever repeating it.
+      const authMessage = apiError?.fieldErrors().authentication;
+      if (authMessage) {
+        setAuthError(authMessage);
+        return;
+      }
+
       toast.error("Could not start the scan", {
         description: apiError?.message ?? "Please try again.",
       });
     } finally {
       setScanning(null);
+      // Cleared on every path — success, API rejection, or network failure — so
+      // a credential is never left sitting in a mounted component.
+      setAuthentication(EMPTY_AUTHENTICATION);
     }
   });
 
@@ -107,6 +139,16 @@ export function CreateScanForm({ onCreated }: { onCreated?: (scan: Scan) => void
 
       <FieldError message={errors.target_url?.message} />
 
+      <AuthenticationFields
+        value={authentication}
+        onChange={(next) => {
+          setAuthentication(next);
+          setAuthError(undefined);
+        }}
+        disabled={isSubmitting}
+        error={authError}
+      />
+
       {isSubmitting && scanning ? (
         <div
           role="status"
@@ -123,8 +165,9 @@ export function CreateScanForm({ onCreated }: { onCreated?: (scan: Scan) => void
         </div>
       ) : (
         <p className="text-xs text-muted-foreground">
-          Only scan sites you own or are authorised to test. The probe sends a single HTTP request
-          to this exact URL — it does not crawl the site.
+          Only scan sites you own or are authorised to test. The scan fetches this URL, crawls the
+          same origin from where it lands, and runs bounded reflected-XSS and SQL-injection checks
+          against the query parameters it finds.
         </p>
       )}
     </form>

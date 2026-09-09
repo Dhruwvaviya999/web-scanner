@@ -23,6 +23,7 @@ from urllib.parse import urljoin
 
 import httpx
 
+from app.scanner.auth.types import AuthenticationContext
 from app.scanner.response_analyzer import analyze_response, is_textual_response
 from app.scanner.types import (
     RawHttpResponse,
@@ -72,10 +73,15 @@ class HttpFetcher:
         *,
         allow_url: UrlPredicate | None = None,
         max_redirects: int | None = None,
+        authentication: AuthenticationContext | None = None,
     ) -> None:
         self._config = config
         self._client = client
         self._allow_url = allow_url
+        # Target authentication, not the scanner's own login. Held here so the
+        # crawler, the probe engine and every detector inherit it from the one
+        # transport they all share, and none of them builds an auth header.
+        self._authentication = authentication or AuthenticationContext.none()
         self._max_redirects = (
             max_redirects if max_redirects is not None else config.max_redirects
         )
@@ -170,8 +176,17 @@ class HttpFetcher:
         )
 
     async def _send(self, url: str) -> httpx.Response:
-        """Send a GET and return the response with its body still unread."""
-        request = self._client.build_request("GET", url)
+        """Send a GET and return the response with its body still unread.
+
+        Authentication is attached per request rather than on the client, and
+        only for a URL inside the authorized origin. That ordering is what stops
+        a credential riding a redirect off-origin: by the time a hop is sent, it
+        has already been re-parsed and re-checked, and `headers_for` refuses any
+        URL the user did not authorize.
+        """
+        request = self._client.build_request(
+            "GET", url, headers=self._authentication.headers_for(url)
+        )
         try:
             return await self._client.send(request, stream=True)
         except httpx.TooManyRedirects as exc:
@@ -203,12 +218,19 @@ class HttpProbeModule:
 
     name = "http_probe"
 
-    def __init__(self, config: ScannerConfig) -> None:
+    def __init__(
+        self,
+        config: ScannerConfig,
+        authentication: AuthenticationContext | None = None,
+    ) -> None:
         self._config = config
+        self._authentication = authentication
 
     async def run(self, target: ScanTarget, report: ScanReport) -> None:
         async with build_client(self._config) as client:
-            raw = await HttpFetcher(self._config, client).fetch(target)
+            raw = await HttpFetcher(
+                self._config, client, authentication=self._authentication
+            ).fetch(target)
 
         # Kept on the report so the security detectors can read the headers and
         # cookies without a second request to the target.

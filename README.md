@@ -299,7 +299,7 @@ Always change the schema through a migration; never edit the database by hand.
 
 ```bash
 cd backend
-.venv\Scripts\python -m pytest          # 405 tests
+.venv\Scripts\python -m pytest          # 500 tests
 ```
 
 | Suite | Covers |
@@ -323,6 +323,7 @@ cd backend
 | `test_findings_api.py` | Findings API ownership and isolation |
 | `test_attack_surface_api.py` | Endpoint/form API ownership and isolation |
 | `test_scan_lifecycle.py` | State machine, cancellation, progress, failure isolation |
+| `test_authenticated_scanning.py` | Credential validation, origin scope, transport, authenticated discovery, leakage |
 
 The detector and crawler suites need no network: the crawler's page fetcher is injected, so
 limits, cycles and failure handling are deterministic. The API suites drive the real app through
@@ -1287,6 +1288,235 @@ caller rather than a change of schema.
 
 ---
 
+## Authorized authentication-aware scanning (Phase 11)
+
+A scan can carry credentials the user already holds for an application they are authorized to
+test, so the crawler and the existing detectors reach the pages behind its login.
+
+Phase 11 adds no detector. It adds a *request context*.
+
+### Two different things called authentication
+
+| | What it is | Where it lives |
+| --- | --- | --- |
+| **Scanner-user authentication** | The JWT session cookie that says who is using this application | `app/core/security.py`, unchanged since phase 1 |
+| **Target authentication** | A credential the user supplies so a scan can reach their own protected pages | `app/scanner/auth/` |
+
+They never mix. The scanner-user session authorises the *request that creates a scan*; the target
+credential is data inside that request.
+
+### What the scanner does not do
+
+It never discovers, guesses, brute-forces, stuffs, cracks, refreshes or renews a credential. It
+never submits a login form, never bypasses authentication, never hijacks or fixates a session and
+never automates a sign-in workflow. It presents material it was given, and that is all.
+
+Password login automation, OAuth, SAML, MFA and browser-driven flows are deliberately absent:
+each is an interaction *with* an authentication system rather than the presentation of material
+the user already holds.
+
+### Supported modes
+
+| Mode | What the user supplies | What is sent |
+| ---- | ---------------------- | ------------ |
+| `NONE` | nothing | nothing — an ordinary anonymous scan |
+| `BEARER_TOKEN` | an access token | `Authorization: Bearer <token>` |
+| `COOKIE` | one or more name/value pairs | `Cookie: name=value; ...` |
+
+One authentication context per scan. Multi-user, role-comparison and privilege-escalation testing
+are **not** implemented — see the limitations below.
+
+### Authentication belongs to the transport
+
+```
+AuthenticationContext
+        |
+   HttpFetcher          <- the one place a credential becomes a header
+    /        \
+Crawler    ProbeEngine
+                |
+        XSS / SQLi detectors
+```
+
+`HttpFetcher._send` attaches the headers; nothing else in the codebase constructs an
+`Authorization` or a `Cookie` header. The crawler and the probe engine each build a fetcher and
+therefore inherit the context, and the detectors inherit it from the engine without knowing it
+exists. Their interface is untouched:
+
+```python
+eligible(target)            # unchanged
+probe(target, engine)       # unchanged
+```
+
+That is what makes an authenticated XSS or SQLi check free: no detector was modified, and a
+future detector is authenticated the day it is written.
+
+Because one fetcher serves the whole active stage, a detector's baseline and its probes always
+carry the same context. Comparing an authenticated baseline against an unauthenticated probe
+would manufacture a difference and therefore a finding, so the two can never diverge.
+
+### Authentication never widens scope
+
+The context is bound to the origin of the URL the user asked to scan, fixed when it is built:
+
+```python
+def applies_to(self, url):
+    return is_same_origin(url, self.origin)   # exact scheme, host and port
+```
+
+`headers_for` returns nothing for any other URL. A different host, a subdomain, a different
+scheme and a different port are all different origins, so the credential is simply not offered.
+
+Every phase 1-10 protection is unchanged: URL validation, the SSRF guard, the http/https-only
+rule, the same-origin crawl, the per-hop redirect re-validation, the redirect limit, timeouts and
+the response-size cap. Two independent things now protect a credential during a redirect:
+
+* Where a scope lock is set — the crawler, the probe engine, the access check — an off-origin hop
+  is **refused outright** and never requested.
+* The seed probe still follows redirects anywhere, as it has since phase 2, but the context hands
+  out nothing for the new origin, so the hop goes out as an ordinary anonymous request.
+
+A credential cannot follow a redirect off the authorized origin under either path. Both are
+covered by tests, and by a live check that reads back what a second origin actually received.
+
+### Secrets are never persisted
+
+There is no column, anywhere, for a token or a cookie value.
+
+A credential arrives in the create request, becomes an in-memory `AuthenticationContext`, is
+passed down the call stack into the scanner, and is gone when the call returns. Two facts are
+written to the `scans` row and nothing else:
+
+```
+auth_mode    NONE | BEARER_TOKEN | COOKIE
+auth_status  NOT_CONFIGURED | AVAILABLE | REJECTED | UNKNOWN
+```
+
+Passing the context as an argument, rather than keeping it in a registry, is deliberate: its
+lifetime is the lifetime of the call, so nothing has to remember to clear it. **This is what ties
+authenticated scanning to inline execution.** Moving scans to a worker would put an execution
+boundary between the request and the scan, and the credential would have to survive it — which
+would mean storing it somewhere. That trade is documented rather than taken.
+
+Practically, Python offers no guaranteed erasure: strings are immutable and their memory is
+reclaimed by the garbage collector whenever it runs. The honest claim is that no reference is
+retained after the scan, not that the bytes are wiped.
+
+`AuthenticationContext` and `CookieCredential` also refuse to render. `repr`, `str` and any
+f-string produce `secret=<redacted>`, so a stray `%s`, a debug print or an exception repr cannot
+leak a credential. On the request side, pydantic `SecretStr` gives the same protection in
+validation errors and JSON dumps.
+
+### Input validation
+
+The threat is header injection: a CR or LF in a credential would end the header and let the rest
+be read as further headers. Rejecting is the only safe answer — sanitising by stripping would
+silently alter a credential the user believes they supplied.
+
+| | Rule |
+| --- | --- |
+| Token | non-empty, at most 8192 characters, printable ASCII only, no CR/LF/NUL/space/tab, not already prefixed with `Bearer` |
+| Cookie name | RFC 6265 token characters, at most 256 characters, unique within the set |
+| Cookie value | RFC 6265 `cookie-octet`, at most 4096 characters; a quoted value is allowed |
+| Cookie set | at least one, at most 20, at most 8192 characters assembled |
+
+Outer whitespace is trimmed from a token — a token pasted from a terminal arrives with a trailing
+newline, and that is not part of the credential. Cookie **values** are never normalised: a signed
+or encrypted session cookie is one opaque string, and trimming or re-encoding it would break the
+signature and turn a working credential into an unexplained 401.
+
+No validation message ever repeats the value it rejected.
+
+### The initial access check
+
+One GET, to the URL the user asked to scan, carrying the material they supplied, before the crawl
+starts. It exists to say whether the credential looks usable — not to attack anything. No URL is
+guessed, no login endpoint is probed, nothing is retried or refreshed, and no target state is
+modified. An unauthenticated scan skips it entirely and issues no request at all.
+
+| Result | Meaning |
+| ------ | ------- |
+| `NOT_CONFIGURED` | No credential was supplied |
+| `AVAILABLE` | The target answered without refusing it |
+| `REJECTED` | 401, 403, or a redirect onto a sign-in page |
+| `UNKNOWN` | Unreachable, a server error, or an answer that says nothing either way |
+
+The check reads where the target *sent* the scan; it never guesses where a login page might be. A
+site whose home page simply is `/login` is not called rejected, because no redirect happened.
+
+`AVAILABLE` is a narrow claim: one request, at one moment, was not refused. It is not a statement
+that the credential is valid for every path or for the rest of the scan — a session can expire
+mid-scan, and the report never claims otherwise.
+
+### A refusal is not a vulnerability, and not a clean result
+
+A 401 or a 403 is an access decision. It is never turned into a finding.
+
+Nor is it allowed to read as success. When credentials were supplied and refused, the scan
+covered only the anonymous surface, so:
+
+* `metadata.is_conclusive` is false,
+* `coverage.authentication_usable` is false, which forces `coverage.is_complete` false regardless
+  of what the counters say,
+* the report leads with "The target refused the credentials supplied", and the results page says
+  the same.
+
+Counters alone would happily report "everything discovered was analysed". Everything discovered
+by a visitor who never got in.
+
+### Reporting
+
+```json
+"authentication": { "mode": "COOKIE", "status": "AVAILABLE",
+                    "authenticated": true, "confirmed": true }
+```
+
+There is no field for a token, a cookie value, an `Authorization` header or a `Cookie` header —
+the report's leakage guarantee is structural, not a matter of remembering to redact. Coverage
+wording states which surface was reached: results reflect the endpoints reachable with the
+context supplied, and no other user, role or permission level was tested.
+
+### Frontend
+
+The create form offers None / Bearer token / Cookies. Every secret field is `type="password"`
+with autocomplete off, switching mode discards the material for the mode being left, and the
+draft is cleared in a `finally` — on success, on rejection and on network failure alike.
+
+Nothing is written to `localStorage`, `sessionStorage`, a cookie or a query string; nothing is
+logged; and no credential is ever read back, because the API has nothing to return it from. The
+scan detail page and the report show the mode and the status, never the material.
+
+### Logging
+
+Log lines carry the scan id, the target origin, the auth mode, the status and the stage. Never a
+token, a cookie value, an `Authorization` header, a `Cookie` header or a secret-bearing
+exception. A test asserts that an authenticated run emits no credential at any level down to
+`DEBUG`.
+
+### API
+
+```json
+POST /api/scans
+{
+  "target_url": "https://app.example.com",
+  "authentication": { "mode": "BEARER_TOKEN", "token": "..." }
+}
+```
+
+or
+
+```json
+{ "authentication": { "mode": "COOKIE",
+                      "cookies": [{ "name": "session", "value": "..." }] } }
+```
+
+Credentials are accepted only on an authenticated scanner-user request, and only in the body.
+Malformed material is a `422` on the request, not a failed scan. The response — like every scan
+response — carries `auth_mode`, `auth_status` and a grouped `authentication` object, and no
+credential.
+
+---
+
 ## API overview
 
 All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
@@ -1321,7 +1551,7 @@ All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
 
 | Method | Path | Auth | Description |
 | ------ | ---- | ---- | ----------- |
-| POST   | `/api/scans` | yes | Create a scan, run the probe, return the result |
+| POST   | `/api/scans` | yes | Create and run a scan; optionally carries target credentials |
 | GET    | `/api/scans` | yes | List the caller's scans (`limit`, `offset`, `status`) |
 | GET    | `/api/scans/stats` | yes | Scan counts by status |
 | GET    | `/api/scans/{scan_id}` | yes | Read one scan |
@@ -1394,8 +1624,24 @@ the server and mirrored by Zod in the browser; the server is authoritative.
 
 ## Current limitations
 
-* **No vulnerability testing.** A scan is one HTTP request. Security headers and cookies on that
-  response are assessed; nothing is probed, and no payload is ever sent.
+* **A limited, specific set of checks.** A scan fetches the target, crawls the same origin,
+  assesses security headers and cookies, and runs conservative reflected-XSS and SQL-injection
+  checks against discovered GET query parameters. That is the whole of it: no TLS analysis, no
+  CORS analysis, no CSRF, SSRF, IDOR or open-redirect testing, and no authorization testing.
+* **No authorization or role testing.** One authentication context per scan. The scanner does not
+  compare users, roles or permission levels, and never checks whether one account can reach
+  another's data. An authenticated scan says what *that* context could reach, nothing more.
+* **Target authentication is presented, never obtained.** Credentials are supplied by the
+  authorized user. There is no login automation, no OAuth, no SAML, no MFA handling, no browser
+  engine, and nothing that discovers, guesses or brute-forces a credential.
+* **Authentication can lapse mid-scan.** `AVAILABLE` reflects one request at the start. If a
+  session expires while the scan runs, later pages are fetched anonymously and simply appear as
+  redirects to a login page; the scanner does not re-authenticate, and cannot.
+* **Credentials are not persisted, which ties scanning to inline execution.** A target credential
+  lives in memory for the length of the request and is never written to PostgreSQL. Moving scans
+  onto a worker would require it to cross that boundary, which would mean storing it — so that
+  change is not a drop-in one. Python also offers no guaranteed memory erasure: no reference is
+  kept after a scan, but the bytes are reclaimed whenever the garbage collector runs.
 * **Scans run in the API process.** There is no queue and no worker: `POST /api/scans` blocks
   until the scan stops, and a process restart mid-scan leaves that scan `RUNNING` with nothing to
   finish it. Nothing reaps such a row automatically.
@@ -1462,7 +1708,7 @@ the server and mirrored by Zod in the browser; the server is authoritative.
   pinning the resolved address into the connection, planned alongside the crawler.
 * Sessions cannot be revoked server-side before the token expires (no token denylist).
 * Email addresses cannot be changed; there is no password reset or email verification.
-* No automated test suite yet.
+* Findings are not verified by exploitation. A reported issue is a signal the scanner observed and reproduced, not a demonstrated exploit.
 
 ---
 
@@ -1481,10 +1727,12 @@ Planned, in order. Everything from Phase 3 onward is unimplemented.
 | 7 | Reusable active-probe framework; XSS migrated onto it | done |
 | 8 | Conservative SQL-injection detection (error-based + boolean) | done |
 | 9 | Reporting layer: canonical report, API, results page, JSON export | done |
-| 10 | Scan execution lifecycle: state machine, cancellation, progress | **done - current release** |
-| 11 | TLS inspection, CORS policy, risk scoring | planned |
-| 12 | Further active testing: open redirect, API security checks | planned |
-| 13 | Additional export formats (PDF, SARIF), background execution | planned |
+| 10 | Scan execution lifecycle: state machine, cancellation, progress | done |
+| 11 | Authorized authentication-aware scanning (bearer token, cookies) | **done - current release** |
+| 12 | TLS inspection, CORS policy, risk scoring | planned |
+| 13 | Further active testing: open redirect, API security checks | planned |
+| 14 | Authorization testing: roles, horizontal and vertical checks | planned |
+| 15 | Additional export formats (PDF, SARIF), background execution | planned |
 
 The attack surface discovered in Phase 4 is what later detectors will consume: endpoints and
 their parameters are the injection points an XSS or SQL-injection check needs, and forms are

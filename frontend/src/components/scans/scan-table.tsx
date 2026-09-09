@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { ArrowUpRight } from "lucide-react";
 
+import { AuthenticationBadge } from "@/components/scans/authentication-badge";
 import { CancelScanDialog } from "@/components/scans/cancel-scan-dialog";
 import { DeleteScanDialog } from "@/components/scans/delete-scan-dialog";
 import { HttpStatusBadge } from "@/components/scans/http-status-badge";
@@ -35,7 +36,7 @@ export function ScanTable({ scans, loading = false, onChanged, compact = false }
         <TableHeader>
           <TableRow className="hover:bg-transparent">
             <TableHead className="min-w-64">Target</TableHead>
-            <TableHead className="w-32">Status</TableHead>
+            <TableHead className="w-44">Status</TableHead>
             <TableHead className="w-36">HTTP</TableHead>
             <TableHead className="w-28">Time</TableHead>
             <TableHead className="w-44">Created</TableHead>
@@ -72,10 +73,15 @@ export function ScanTable({ scans, loading = false, onChanged, compact = false }
                     ) : null}
                   </TableCell>
                   <TableCell>
-                    <ScanStatusBadge
-                      status={scan.status}
-                      cancelRequested={scan.cancel_requested}
-                    />
+                    <div className="flex flex-col items-start gap-1">
+                      <ScanStatusBadge
+                        status={scan.status}
+                        cancelRequested={scan.cancel_requested}
+                      />
+                      {scan.auth_mode === "NONE" ? null : (
+                        <AuthenticationBadge mode={scan.auth_mode} status={scan.auth_status} />
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell>
                     <HttpStatusBadge code={scan.http_status_code} />

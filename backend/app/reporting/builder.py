@@ -17,6 +17,7 @@ from app.reporting.types import (
     AttackSurfaceSummary,
     CategoryGroup,
     CoverageSummary,
+    ReportAuthentication,
     ReportEndpointRef,
     ReportFinding,
     ReportMetadata,
@@ -24,6 +25,7 @@ from app.reporting.types import (
     SeveritySummary,
     _SeverityTally,
 )
+from app.scanner.auth import AuthMode, AuthStatus
 from app.scanner.security.types import FindingCategory
 
 
@@ -79,6 +81,13 @@ def _metadata(scan: Scan, generated_at: datetime) -> ReportMetadata:
         error_message=scan.error_message,
         cancelled_at=scan.cancelled_at,
         failure_stage=scan.failure_stage,
+        # `or` covers a row that has not been flushed yet, where the column
+        # default has not been applied: an unset mode means unauthenticated,
+        # never "authenticated with an unknown mode".
+        authentication=ReportAuthentication(
+            mode=scan.auth_mode or AuthMode.NONE.value,
+            status=scan.auth_status or AuthStatus.NOT_CONFIGURED.value,
+        ),
     )
 
 
@@ -95,6 +104,7 @@ def _coverage(scan: Scan) -> CoverageSummary:
         max_depth_reached=scan.max_depth_reached,
         crawl_limit_reached=scan.crawl_limit_reached,
         scan_completed=scan.status is ScanStatus.COMPLETED,
+        authentication_usable=scan.auth_status != AuthStatus.REJECTED.value,
     )
 
 

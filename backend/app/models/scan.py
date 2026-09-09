@@ -107,6 +107,24 @@ class Scan(Base, TimestampMixin):
     #: never a stack trace, request or secret.
     failure_stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
+    # --- Target authentication (phase 11) ---
+    # Metadata only. The token or cookie values a user supplies for their own
+    # application are NEVER written here, or anywhere else in the database:
+    # they live in memory for the duration of the scan and are gone with the
+    # request. These two columns record only which kind of credential was used
+    # and what one initial access check concluded about it.
+    #
+    # Validated strings rather than native enums, for the same reason as
+    # `current_stage`: the vocabularies are presentation-level and expected to
+    # grow, and ALTER TYPE per value is friction for no gain.
+    # `scanner.auth.AuthMode` and `AuthStatus` enforce the allowed values.
+    auth_mode: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="NONE", server_default="NONE"
+    )
+    auth_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="NOT_CONFIGURED", server_default="NOT_CONFIGURED"
+    )
+
     # --- Basic HTTP probe result ---
     # All nullable: a scan that failed, or has not run yet, has none of them.
     http_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)

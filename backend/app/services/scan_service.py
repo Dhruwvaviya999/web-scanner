@@ -19,6 +19,12 @@ so execution is split into separate units of work:
 
 **Every status change goes through the state machine.** `scan_lifecycle`
 decides what is legal; nothing here assigns a status without it.
+
+**Target-authentication secrets never touch the database.** A credential the
+user supplies for their own application arrives as an `AuthenticationContext`,
+is passed down the call stack into the scanner, and is released when the call
+returns. Only two facts about it are persisted: which mode was used and what one
+initial access check concluded. See `app.scanner.auth`.
 """
 
 from __future__ import annotations
@@ -36,6 +42,7 @@ from app.core.errors import ConflictError, NotFoundError
 from app.models.scan import Scan, ScanStatus
 from app.models.user import User
 from app.scanner import CrawlConfig, ScannerConfig, ScanReport, WebScanner
+from app.scanner.auth import AuthenticationContext, AuthMode, AuthStatus
 from app.scanner.security.types import FindingSeverity
 from app.scanner import ActiveScanConfig, ProbeBudgetLimits
 from app.scanner.vulnerabilities.sqli.detector import SqlInjectionDetector
@@ -170,18 +177,35 @@ class _StageTracker:
             )
 
 
-def create_scan(db: Session, user: User, target_url: str) -> Scan:
+def create_scan(
+    db: Session,
+    user: User,
+    target_url: str,
+    authentication: AuthenticationContext | None = None,
+) -> Scan:
     """Queue a scan, run it, and return the finished row.
 
     Execution is still inline — the request returns once the scan has stopped —
     but the request's session is committed and left alone for the duration, so
     moving `execute_scan` onto a worker later is a change of caller only.
+
+    `authentication` is a live credential. It is passed as an argument rather
+    than stored anywhere precisely so that its lifetime is the lifetime of this
+    call: nothing holds a reference once the frame returns. Moving execution to
+    a worker later would break that property, which is the honest reason this
+    phase keeps execution inline.
     """
-    scan_id = enqueue_scan(db, user, target_url)
-    return execute_scan(scan_id)
+    auth = authentication or AuthenticationContext.none()
+    scan_id = enqueue_scan(db, user, target_url, auth.mode)
+    return execute_scan(scan_id, authentication=auth)
 
 
-def enqueue_scan(db: Session, user: User, target_url: str) -> uuid.UUID:
+def enqueue_scan(
+    db: Session,
+    user: User,
+    target_url: str,
+    auth_mode: AuthMode = AuthMode.NONE,
+) -> uuid.UUID:
     """Unit of work 1: record the scan as QUEUED and commit.
 
     Returns the id rather than the instance: everything after this point uses
@@ -196,6 +220,10 @@ def enqueue_scan(db: Session, user: User, target_url: str) -> uuid.UUID:
         current_stage=ScanStage.QUEUED.value,
         progress_percent=STAGE_PROGRESS[ScanStage.QUEUED],
         progress_message=STAGE_MESSAGE[ScanStage.QUEUED],
+        # The mode is known now; whether the credentials work is not, and is
+        # written only once the initial access check has actually run.
+        auth_mode=auth_mode.value,
+        auth_status=AuthStatus.NOT_CONFIGURED.value,
     )
     db.add(scan)
     db.commit()
@@ -203,11 +231,17 @@ def enqueue_scan(db: Session, user: User, target_url: str) -> uuid.UUID:
     return scan.id
 
 
-def execute_scan(scan_id: uuid.UUID) -> Scan:
+def execute_scan(
+    scan_id: uuid.UUID, *, authentication: AuthenticationContext | None = None
+) -> Scan:
     """Run a queued scan to a terminal state and return the resulting row.
 
     Holds no session while the scanner works. Every failure path ends in a
     terminal status: a scan is never left RUNNING because something raised.
+
+    Any authentication context lives only in this frame and in the scanner it
+    creates. Nothing here writes it, logs it, or attaches it to the row that is
+    returned.
     """
     target_url = _claim(scan_id)
     if target_url is None:
@@ -223,6 +257,7 @@ def execute_scan(scan_id: uuid.UUID) -> Scan:
             detectors=_active_detectors(),
             cancellation=cancellation_token_for(scan_id),
             on_module_start=stage.enter_module,
+            authentication=authentication,
         ).scan_sync(target_url)
     except Exception:  # noqa: BLE001 - the scan must not be left RUNNING
         logger.exception("Scan %s raised while running", scan_id)
@@ -272,6 +307,7 @@ def _finish(scan_id: uuid.UUID, report: ScanReport, stage: _StageTracker) -> Sca
             raise NotFoundError("Scan not found.", code="scan_not_found")
 
         _apply_probe(scan, report)
+        _apply_authentication(scan, report)
 
         # Order matters: endpoints must exist and be flushed before findings can
         # be linked to them, and the analysis outcome is recorded on those rows.
@@ -371,6 +407,19 @@ def _finalize(
     scan.failure_stage = None
     if status is ScanStatus.CANCELLED and scan.cancelled_at is None:
         scan.cancelled_at = scan.completed_at
+
+
+def _apply_authentication(scan: Scan, report: ScanReport) -> None:
+    """Record how the scan authenticated, and what the access check concluded.
+
+    Two short strings. There is deliberately no branch here that could copy a
+    header, a token or a cookie onto the row — the report never carried one in
+    the first place.
+    """
+    if report.auth is None:
+        return
+    scan.auth_mode = report.auth.mode.value
+    scan.auth_status = report.auth.status.value
 
 
 def _apply_probe(scan: Scan, report: ScanReport) -> None:
