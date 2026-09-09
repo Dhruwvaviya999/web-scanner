@@ -100,6 +100,103 @@ class ReportAuthorization:
 
 
 @dataclass(frozen=True, slots=True)
+class ReportApiParameter:
+    """One API parameter in the report. A name and a place, never a value."""
+
+    name: str
+    location: str
+    required: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReportApiEndpoint:
+    """One API operation as it appears in a report.
+
+    `observed` and `documented` are both carried because they answer different
+    questions. Observed means the scanner requested it and something answered.
+    Documented means a specification says it exists — which is a claim, not a
+    fact, and a reviewer reading an inventory needs to know which they are
+    looking at.
+    """
+
+    path: str
+    method: str
+    confidence: str
+    sources: tuple[str, ...]
+    auth_status: str
+    observed: bool
+    documented: bool
+    status_code: int | None = None
+    request_media_type: str | None = None
+    response_media_type: str | None = None
+    operation_id: str | None = None
+    security: tuple[str, ...] = ()
+    parameters: tuple[ReportApiParameter, ...] = ()
+    #: Field *names* from a JSON response. Never a value from one.
+    json_field_names: tuple[str, ...] = ()
+    json_top_level: str | None = None
+
+    @property
+    def documented_only(self) -> bool:
+        return self.documented and not self.observed
+
+    @property
+    def sort_key(self) -> tuple[str, str]:
+        return (self.path, self.method)
+
+
+@dataclass(frozen=True, slots=True)
+class ReportApiDocument:
+    """A specification the scanner read. Nothing in it was executed."""
+
+    url: str
+    version: str
+    title: str | None = None
+    path_count: int = 0
+    operation_count: int = 0
+    security_schemes: tuple[str, ...] = ()
+    truncated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ReportApiSurface:
+    """What API discovery found, and how much of it is actually established.
+
+    The counters are deliberately split three ways. `endpoints_observed` is what
+    the scanner saw work; `endpoints_documented_only` is what a document claims
+    exists and nobody checked; the difference between them is the part of an API
+    inventory that most often gets overstated.
+    """
+
+    detected: bool = False
+    endpoints_discovered: int = 0
+    endpoints_observed: int = 0
+    endpoints_documented_only: int = 0
+    parameters_discovered: int = 0
+    authenticated_endpoints: int = 0
+    unknown_auth_endpoints: int = 0
+    openapi_documents: int = 0
+    graphql_detected: bool = False
+    graphql_path: str | None = None
+    #: Always False in this phase. Stated rather than omitted, so a reader is
+    #: never left to assume introspection was attempted.
+    graphql_introspection_tested: bool = False
+    truncated: bool = False
+    endpoints: tuple[ReportApiEndpoint, ...] = ()
+    documents: tuple[ReportApiDocument, ...] = ()
+
+    @property
+    def complete_inventory(self) -> bool:
+        """Whether the inventory is bounded by the target rather than by us.
+
+        False when a limit stopped it growing. Never a claim that every API the
+        application has was found — only a crawl and a published specification
+        were consulted, and neither is guaranteed to be exhaustive.
+        """
+        return self.detected and not self.truncated
+
+
+@dataclass(frozen=True, slots=True)
 class ReportMetadata:
     """What was scanned, when, and how the scan ended."""
 
@@ -172,6 +269,9 @@ class CoverageSummary:
     #: Authorization testing, which is separate from authentication coverage: a
     #: scan can authenticate perfectly and test no access control at all.
     authorization: ReportAuthorization = field(default_factory=lambda: ReportAuthorization())
+    #: API reconnaissance. A classification of the surface, not a test of it:
+    #: discovering an API says nothing about whether it is secure.
+    api: ReportApiSurface = field(default_factory=lambda: ReportApiSurface())
 
     @property
     def is_complete(self) -> bool:

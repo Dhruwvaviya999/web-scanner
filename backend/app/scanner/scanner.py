@@ -14,6 +14,8 @@ import logging
 from collections.abc import Callable
 
 from app.scanner.analysis.module import EndpointAnalysisModule
+from app.scanner.api.module import ApiDiscoveryModule
+from app.scanner.api.types import ApiDiscoveryConfig
 from app.scanner.auth.health import AuthenticationCheckModule
 from app.scanner.auth.types import AuthenticationContext
 from app.scanner.authorization.matrix import AuthorizationPlan
@@ -51,7 +53,11 @@ class WebScanner:
         authentication: AuthenticationContext | None = None,
         authz_config: AuthorizationConfig | None = None,
         authorization: AuthorizationPlan | None = None,
+        api_config: ApiDiscoveryConfig | None = None,
     ) -> None:
+        # API reconnaissance. Classifies the discovered surface and reads any
+        # specification the target publishes; exploits nothing.
+        self._api_config = api_config or ApiDiscoveryConfig()
         # Authorization testing: identities and the policy they are measured
         # against, both supplied by the authorized user. Disabled unless at
         # least two identities were given, since a comparison needs two sides.
@@ -98,6 +104,15 @@ class WebScanner:
                     self._authentication,
                 ),
                 EndpointAnalysisModule(self._cancellation),
+                # After the crawl, before active probing: the classification it
+                # produces describes the same surface the detectors go on to
+                # test, and it must be available to whatever reads the report.
+                ApiDiscoveryModule(
+                    self._config,
+                    self._api_config,
+                    self._cancellation,
+                    self._authentication,
+                ),
                 # Active probing runs last: it needs the discovered parameters,
                 # and its findings join the same aggregation. Adding a detector
                 # later means extending this list, nothing more.

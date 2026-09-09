@@ -17,6 +17,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from app.models.api_surface import ApiDocument, ApiEndpointRow
 from app.models.attack_surface import Endpoint, Form
 from app.models.finding import Finding, FindingOccurrence
 from app.models.scan import Scan
@@ -40,7 +41,25 @@ def generate_report(
         _load_findings(db, scan),
         _load_endpoints(db, scan),
         _load_forms(db, scan),
+        api_endpoints=_load_api_endpoints(db, scan),
+        api_documents=_load_api_documents(db, scan),
         generated_at=generated_at,
+    )
+
+
+def _load_api_endpoints(db: Session, scan: Scan) -> list[ApiEndpointRow]:
+    return list(
+        db.scalars(
+            select(ApiEndpointRow)
+            .where(ApiEndpointRow.scan_id == scan.id)
+            .options(selectinload(ApiEndpointRow.parameters))
+        )
+    )
+
+
+def _load_api_documents(db: Session, scan: Scan) -> list[ApiDocument]:
+    return list(
+        db.scalars(select(ApiDocument).where(ApiDocument.scan_id == scan.id))
     )
 
 

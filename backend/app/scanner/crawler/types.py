@@ -13,6 +13,12 @@ from __future__ import annotations
 import enum
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Type-only: the API package must not be imported at runtime here, or every
+    # `crawler.types` import would pull the classifier in behind it.
+    from app.scanner.api.types import JsonShape
 
 
 class ParameterLocation(str, enum.Enum):
@@ -140,6 +146,11 @@ class CapturedResponse:
     issuing a second request for it. Deliberately excludes the body: nothing in
     the current detectors reads response content, and not keeping it means page
     content cannot leak into a finding.
+
+    `json_shape` does not weaken that. It is a *structural* summary — a
+    top-level type, a bounded list of field names, a depth and a count — with no
+    value from the document in it. The names describe the interface; the data
+    that was in them is discarded with the body.
     """
 
     url: str
@@ -148,6 +159,8 @@ class CapturedResponse:
     is_https: bool
     headers: Mapping[str, str]
     set_cookie: tuple[str, ...] = ()
+    #: Structure of a JSON body, when the response had one. Names only.
+    json_shape: "JsonShape | None" = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,7 +179,8 @@ class FetchedPage:
     headers: Mapping[str, str] = field(default_factory=dict)
     set_cookie: tuple[str, ...] = ()
 
-    def captured(self) -> CapturedResponse:
+    def captured(self, json_shape: "JsonShape | None" = None) -> CapturedResponse:
+        """Reduce this page to what is safe to keep. The body is dropped here."""
         return CapturedResponse(
             url=self.url,
             status_code=self.status_code,
@@ -174,4 +188,5 @@ class FetchedPage:
             is_https=self.is_https,
             headers=self.headers,
             set_cookie=self.set_cookie,
+            json_shape=json_shape,
         )

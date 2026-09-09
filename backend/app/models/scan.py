@@ -29,6 +29,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base, TimestampMixin
 
 if TYPE_CHECKING:
+    from app.models.api_surface import ApiDocument, ApiEndpointRow
     from app.models.attack_surface import Endpoint, Form
     from app.models.finding import Finding
     from app.models.user import User
@@ -146,6 +147,43 @@ class Scan(Base, TimestampMixin):
     authz_skipped: Mapped[int | None] = mapped_column(Integer, nullable=True)
     authz_failed: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # --- API discovery (phase 13) ---
+    # Coverage counters for the API attack surface. The endpoints themselves
+    # live in `api_endpoints`; these are the denormalised totals a scan list and
+    # a report header need without a join, matching how the phase 4/5 crawl
+    # counters work.
+    #
+    # NULL means the stage did not run, which stays distinct from "ran and found
+    # nothing" — the same convention as every other counter on this row.
+    api_detected: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    api_endpoints_discovered: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: Actually requested and answered, as opposed to merely described.
+    api_endpoints_observed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: Described by a specification and never reached. The distinction the API
+    #: report leans on hardest: documented is not the same as working.
+    api_endpoints_documented_only: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    api_parameters_discovered: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    api_document_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    api_authenticated_endpoints: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    api_unknown_auth_endpoints: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: True when a bound stopped the inventory growing, so a partial surface is
+    #: never presented as complete.
+    api_truncated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    #: GraphQL presence only. Introspection is never run in this phase, and the
+    #: report says so explicitly rather than leaving a reader to assume.
+    api_graphql_detected: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    api_graphql_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+
     # --- Basic HTTP probe result ---
     # All nullable: a scan that failed, or has not run yet, has none of them.
     http_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -202,6 +240,16 @@ class Scan(Base, TimestampMixin):
         passive_deletes=True,
     )
     forms: Mapped[list["Form"]] = relationship(
+        back_populates="scan",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    api_endpoints: Mapped[list["ApiEndpointRow"]] = relationship(
+        back_populates="scan",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    api_documents: Mapped[list["ApiDocument"]] = relationship(
         back_populates="scan",
         cascade="all, delete-orphan",
         passive_deletes=True,

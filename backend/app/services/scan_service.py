@@ -48,6 +48,7 @@ from app.models.scan import Scan, ScanStatus
 from app.models.user import User
 from app.scanner import CrawlConfig, ScannerConfig, ScanReport, WebScanner
 from app.scanner.auth import AuthenticationContext, AuthMode, AuthStatus
+from app.scanner.api.types import ApiDiscoveryConfig, ApiDiscoveryLimits
 from app.scanner.authorization import AuthorizationConfig, AuthorizationBudgetLimits
 from app.scanner.authorization.matrix import AuthorizationPlan
 from app.scanner.security.types import FindingSeverity
@@ -55,7 +56,7 @@ from app.scanner import ActiveScanConfig, ProbeBudgetLimits
 from app.scanner.vulnerabilities.sqli.detector import SqlInjectionDetector
 from app.scanner.vulnerabilities.xss.detector import ReflectedXssDetector
 from app.schemas.scan import LABEL_SEPARATOR
-from app.services import attack_surface_service, finding_service
+from app.services import api_surface_service, attack_surface_service, finding_service
 from app.services.cancellation import cancellation_token_for
 from app.services.scan_lifecycle import (
     STAGE_MESSAGE,
@@ -84,6 +85,7 @@ MODULE_STAGE: dict[str, ScanStage] = {
     "http_probe": ScanStage.PROBING,
     "crawler": ScanStage.CRAWLING,
     "endpoint_analysis": ScanStage.ANALYZING,
+    "api_discovery": ScanStage.API_DISCOVERY,
     "active_scan": ScanStage.ANALYZING,
     "authorization": ScanStage.AUTHORIZATION,
 }
@@ -120,6 +122,27 @@ def _active_config() -> ActiveScanConfig:
             per_scan=settings.MAX_ACTIVE_PROBES_PER_SCAN,
         ),
         max_targets=settings.ACTIVE_SCAN_MAX_TARGETS,
+    )
+
+
+def _api_config() -> ApiDiscoveryConfig:
+    """Bounds for API reconnaissance.
+
+    The candidate list stays at its module default: it is a fixed set of
+    conventional paths, not a wordlist, and the setting caps how many of them
+    are tried rather than supplying more.
+    """
+    return ApiDiscoveryConfig(
+        enabled=settings.API_DISCOVERY_ENABLED,
+        fetch_documents=settings.API_FETCH_DOCUMENTS,
+        limits=ApiDiscoveryLimits(
+            max_document_candidates=settings.API_MAX_DOCUMENT_CANDIDATES,
+            max_parsed_paths=settings.API_MAX_PARSED_PATHS,
+            max_endpoints=settings.API_MAX_ENDPOINTS,
+            max_parameters_per_endpoint=settings.API_MAX_PARAMETERS_PER_ENDPOINT,
+            max_json_fields=settings.API_MAX_JSON_FIELDS,
+            max_json_depth=settings.API_MAX_JSON_DEPTH,
+        ),
     )
 
 
@@ -297,6 +320,7 @@ def execute_scan(
             authentication=authentication,
             authz_config=_authorization_config(),
             authorization=authorization,
+            api_config=_api_config(),
         ).scan_sync(target_url)
     except Exception:  # noqa: BLE001 - the scan must not be left RUNNING
         logger.exception("Scan %s raised while running", scan_id)
@@ -353,6 +377,12 @@ def _finish(scan_id: uuid.UUID, report: ScanReport, stage: _StageTracker) -> Sca
         # be linked to them, and the analysis outcome is recorded on those rows.
         endpoints_by_url = attack_surface_service.replace_attack_surface(db, scan, report.crawl)
         attack_surface_service.apply_analysis(db, endpoints_by_url, report.analysis)
+
+        # After the attack surface exists, so an observed API operation can be
+        # linked back to the crawl row it was seen on.
+        api_surface_service.replace_api_surface(
+            db, scan, report.api, endpoints_by_url
+        )
 
         aggregated = report.analysis.findings if report.analysis else []
         finding_service.replace_findings(db, scan, aggregated, endpoints_by_url)

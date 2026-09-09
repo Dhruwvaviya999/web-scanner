@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
+from app.models.api_surface import ApiDocument, ApiEndpointRow, split_list
 from app.models.attack_surface import Endpoint, Form
 from app.models.finding import Finding
 from app.models.scan import Scan, ScanStatus
@@ -17,6 +18,10 @@ from app.reporting.types import (
     AttackSurfaceSummary,
     CategoryGroup,
     CoverageSummary,
+    ReportApiDocument,
+    ReportApiEndpoint,
+    ReportApiParameter,
+    ReportApiSurface,
     ReportAuthentication,
     ReportAuthorization,
     ReportEndpointRef,
@@ -36,6 +41,8 @@ def build_report(
     endpoints: Sequence[Endpoint],
     forms: Sequence[Form],
     *,
+    api_endpoints: Sequence["ApiEndpointRow"] = (),
+    api_documents: Sequence["ApiDocument"] = (),
     generated_at: datetime | None = None,
 ) -> ScanReport:
     """Assemble the canonical report for one scan.
@@ -53,7 +60,7 @@ def build_report(
 
     return ScanReport(
         metadata=_metadata(scan, generated_at or datetime.now(UTC)),
-        coverage=_coverage(scan),
+        coverage=_coverage(scan, api_endpoints, api_documents),
         severity=_severity_summary(report_findings),
         attack_surface=_attack_surface(endpoints, forms),
         findings=report_findings,
@@ -92,7 +99,94 @@ def _metadata(scan: Scan, generated_at: datetime) -> ReportMetadata:
     )
 
 
-def _coverage(scan: Scan) -> CoverageSummary:
+def _api_surface(
+    scan: Scan,
+    api_endpoints: Sequence["ApiEndpointRow"],
+    api_documents: Sequence["ApiDocument"],
+) -> ReportApiSurface:
+    """The API section, from the stored rows.
+
+    Sorted deterministically by `(path, method)` so two builds of one scan are
+    byte-identical, which is the guarantee the whole report rests on.
+    """
+    endpoints = tuple(
+        sorted(
+            (
+                ReportApiEndpoint(
+                    path=row.path,
+                    method=row.method,
+                    confidence=row.confidence,
+                    sources=tuple(split_list(row.sources)),
+                    auth_status=row.auth_status,
+                    observed=bool(row.observed),
+                    documented=bool(row.documented),
+                    status_code=row.status_code,
+                    request_media_type=row.request_media_type,
+                    response_media_type=row.response_media_type,
+                    operation_id=row.operation_id,
+                    security=tuple(split_list(row.security)),
+                    parameters=tuple(
+                        sorted(
+                            (
+                                ReportApiParameter(
+                                    name=parameter.name,
+                                    location=parameter.location,
+                                    required=parameter.required,
+                                )
+                                for parameter in row.parameters
+                            ),
+                            key=lambda p: (p.location, p.name),
+                        )
+                    ),
+                    json_field_names=tuple(split_list(row.json_field_names)),
+                    json_top_level=row.json_top_level,
+                )
+                for row in api_endpoints
+            ),
+            key=lambda e: e.sort_key,
+        )
+    )
+    documents = tuple(
+        sorted(
+            (
+                ReportApiDocument(
+                    url=document.url,
+                    version=document.version,
+                    title=document.title,
+                    path_count=document.path_count,
+                    operation_count=document.operation_count,
+                    security_schemes=tuple(split_list(document.security_schemes)),
+                    truncated=bool(document.truncated),
+                )
+                for document in api_documents
+            ),
+            key=lambda d: d.url,
+        )
+    )
+
+    return ReportApiSurface(
+        detected=bool(scan.api_detected),
+        endpoints_discovered=scan.api_endpoints_discovered or 0,
+        endpoints_observed=scan.api_endpoints_observed or 0,
+        endpoints_documented_only=scan.api_endpoints_documented_only or 0,
+        parameters_discovered=scan.api_parameters_discovered or 0,
+        authenticated_endpoints=scan.api_authenticated_endpoints or 0,
+        unknown_auth_endpoints=scan.api_unknown_auth_endpoints or 0,
+        openapi_documents=scan.api_document_count or 0,
+        graphql_detected=bool(scan.api_graphql_detected),
+        graphql_path=scan.api_graphql_path,
+        graphql_introspection_tested=False,
+        truncated=bool(scan.api_truncated),
+        endpoints=endpoints,
+        documents=documents,
+    )
+
+
+def _coverage(
+    scan: Scan,
+    api_endpoints: Sequence["ApiEndpointRow"] = (),
+    api_documents: Sequence["ApiDocument"] = (),
+) -> CoverageSummary:
     return CoverageSummary(
         endpoints_discovered=scan.endpoints_discovered,
         endpoints_analyzed=scan.endpoints_analyzed,
@@ -107,6 +201,7 @@ def _coverage(scan: Scan) -> CoverageSummary:
         scan_completed=scan.status is ScanStatus.COMPLETED,
         authentication_usable=scan.auth_status != AuthStatus.REJECTED.value,
         authorization=_authorization(scan),
+        api=_api_surface(scan, api_endpoints, api_documents),
     )
 
 

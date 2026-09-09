@@ -36,6 +36,94 @@ class ReportAuthenticationRead(BaseModel):
     )
 
 
+class ReportApiParameterRead(BaseModel):
+    """One API parameter. Structurally incapable of holding a value."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str
+    location: str
+    required: bool | None = None
+
+
+class ReportApiEndpointRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    path: str
+    method: str
+    confidence: str
+    sources: list[str]
+    auth_status: str
+    observed: bool = Field(
+        description="The scanner requested this and something answered."
+    )
+    documented: bool = Field(
+        description="A specification says it exists. That is a claim, not a fact."
+    )
+    documented_only: bool = Field(
+        description="Described by a specification and never actually reached."
+    )
+    status_code: int | None = None
+    request_media_type: str | None = None
+    response_media_type: str | None = None
+    operation_id: str | None = None
+    security: list[str] = Field(
+        default_factory=list,
+        description="Security scheme names a specification declared. Never a credential.",
+    )
+    parameters: list[ReportApiParameterRead] = Field(default_factory=list)
+    json_field_names: list[str] = Field(
+        default_factory=list,
+        description="Field names from a JSON response. Never a value from one.",
+    )
+    json_top_level: str | None = None
+
+
+class ReportApiDocumentRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    url: str
+    version: str
+    title: str | None = None
+    path_count: int
+    operation_count: int
+    security_schemes: list[str] = Field(default_factory=list)
+    truncated: bool
+
+
+class ReportApiSurfaceRead(BaseModel):
+    """The API attack surface. No response body, no credential, no header."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    detected: bool
+    endpoints_discovered: int
+    endpoints_observed: int = Field(
+        description="Actually requested and answered, as opposed to merely described."
+    )
+    endpoints_documented_only: int = Field(
+        description="Described by a specification and never reached."
+    )
+    parameters_discovered: int
+    authenticated_endpoints: int
+    unknown_auth_endpoints: int
+    openapi_documents: int
+    graphql_detected: bool
+    graphql_path: str | None = None
+    graphql_introspection_tested: bool = Field(
+        description="Always false: this phase detects GraphQL and never queries it."
+    )
+    truncated: bool
+    complete_inventory: bool = Field(
+        description=(
+            "True when no limit stopped the inventory growing. Never a claim that "
+            "every API the application has was found."
+        )
+    )
+    endpoints: list[ReportApiEndpointRead] = Field(default_factory=list)
+    documents: list[ReportApiDocumentRead] = Field(default_factory=list)
+
+
 class ReportAuthorizationRead(BaseModel):
     """Authorization coverage. Structurally incapable of holding a secret."""
 
@@ -110,6 +198,7 @@ class CoverageSummaryRead(BaseModel):
         description="Whether the run itself finished, as opposed to failing or being cancelled."
     )
     authorization: ReportAuthorizationRead
+    api: ReportApiSurfaceRead
     authentication_usable: bool = Field(
         description=(
             "False when credentials were supplied and the target refused them, so "

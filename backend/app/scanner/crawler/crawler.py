@@ -19,6 +19,8 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 
+from app.scanner.api.parser import summarize_body
+from app.scanner.api.types import JsonShape
 from app.scanner.cancellation import CancellationToken, ScanCancelled
 from app.scanner.crawler.html_parser import decode_html, extract_forms, extract_links
 from app.scanner.crawler.types import (
@@ -127,7 +129,14 @@ class Crawler:
             result.endpoints.append(endpoint)
             # Keyed by the canonical URL so the analysis stage can look the
             # response up from the stored endpoint without another request.
-            result.responses[endpoint.url] = page.captured()
+            #
+            # The JSON summary is computed here, at the one moment the body is
+            # still in hand and about to be discarded. It costs nothing extra —
+            # no second request — and keeps only structure: a non-JSON body is
+            # rejected on its first character.
+            result.responses[endpoint.url] = page.captured(
+                json_shape=_safe_summary(page.body)
+            )
 
             # Only documents carry links and forms; a JSON or image response is
             # recorded as an endpoint and otherwise left alone.
@@ -206,6 +215,23 @@ class Crawler:
         while queue:
             queue.popleft()
             result.record_skip(reason)
+
+
+def _safe_summary(body: bytes) -> "JsonShape | None":
+    """Summarise a body's JSON structure, or return None. Never raises.
+
+    Wrapped because `_walk` has no guard of its own: an exception here would
+    unwind the whole crawl and discard every page already gathered. One
+    unparseable body is not worth that, and the summary is a convenience rather
+    than something the scan depends on.
+    """
+    if not body:
+        return None
+    try:
+        return summarize_body(body)
+    except Exception:  # noqa: BLE001 - one bad body must not end the crawl
+        logger.debug("Could not summarise a response body", exc_info=True)
+        return None
 
 
 def _page_title(page: FetchedPage) -> str | None:

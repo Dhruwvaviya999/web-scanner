@@ -19,6 +19,12 @@ from app.scanner.auth import AuthConfigError, AuthenticationContext, AuthMode
 from app.scanner.auth.context import build_context
 from app.scanner.authorization import AuthorizationContext, MatrixError, build_matrix
 from app.scanner.authorization.matrix import AuthorizationPlan
+from app.schemas.api_surface import (
+    ApiDocumentRead,
+    ApiEndpointListResponse,
+    ApiEndpointRead,
+    ApiSurfaceSummary,
+)
 from app.schemas.attack_surface import (
     AttackSurfaceSummary,
     EndpointListResponse,
@@ -41,7 +47,12 @@ from app.schemas.scan import (
     ScanStats,
 )
 from app.reporting import service as reporting_service
-from app.services import attack_surface_service, finding_service, scan_service
+from app.services import (
+    api_surface_service,
+    attack_surface_service,
+    finding_service,
+    scan_service,
+)
 
 router = APIRouter(prefix="/scans", tags=["scans"], responses=UNAUTHORIZED_RESPONSE)
 
@@ -265,6 +276,39 @@ def read_scan_endpoints(
             endpoints_skipped=scan.endpoints_skipped,
             endpoints_failed=scan.endpoints_failed,
         ),
+    )
+
+
+@router.get(
+    "/{scan_id}/api-endpoints",
+    response_model=ApiEndpointListResponse,
+    summary="API attack surface discovered for one scan",
+    responses=NOT_FOUND_RESPONSE,
+)
+def read_scan_api_endpoints(
+    scan_id: uuid.UUID, current_user: CurrentUser, db: DbSession
+) -> ApiEndpointListResponse:
+    """Endpoints that behave like APIs, and any specification that described them.
+
+    Classification only. An operation appearing here means the scanner believes
+    it is an API — not that it is vulnerable, and not that it is safe.
+
+    Note `observed` against `documented`: the first means the scanner requested
+    it and something answered, the second means a specification claims it
+    exists. A documented-only operation has not been shown to work, and the
+    counters keep the two apart rather than adding them together.
+
+    Nothing here carries a response body, a parameter value or a credential:
+    `response_fields` is a list of field names, and the data that was in them was
+    discarded at capture time.
+    """
+    endpoints = api_surface_service.list_api_endpoints(db, current_user, scan_id)
+    documents = api_surface_service.list_api_documents(db, current_user, scan_id)
+    scan = scan_service.get_scan(db, current_user, scan_id)
+    return ApiEndpointListResponse(
+        items=[ApiEndpointRead.model_validate(endpoint) for endpoint in endpoints],
+        documents=[ApiDocumentRead.model_validate(document) for document in documents],
+        summary=ApiSurfaceSummary(**api_surface_service.summarize(scan)),
     )
 
 

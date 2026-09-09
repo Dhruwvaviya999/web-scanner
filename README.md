@@ -299,7 +299,7 @@ Always change the schema through a migration; never edit the database by hand.
 
 ```bash
 cd backend
-.venv\Scripts\python -m pytest          # 576 tests
+.venv\Scripts\python -m pytest          # 669 tests
 ```
 
 | Suite | Covers |
@@ -325,6 +325,7 @@ cd backend
 | `test_scan_lifecycle.py` | State machine, cancellation, progress, failure isolation |
 | `test_authenticated_scanning.py` | Credential validation, origin scope, transport, authenticated discovery, leakage |
 | `test_authorization_testing.py` | Policy matching, access comparison, horizontal/vertical/object-level checks, budget, leakage |
+| `test_api_discovery.py` | API classification, JSON structure, OpenAPI/Swagger parsing, GraphQL detection, budgets, leakage |
 
 The detector and crawler suites need no network: the crawler's page fetcher is injected, so
 limits, cycles and failure handling are deterministic. The API suites drive the real app through
@@ -1784,6 +1785,199 @@ of the scan, never a column, never a row.
 
 ---
 
+## API discovery and attack-surface intelligence (Phase 13)
+
+Phase 13 answers a question the earlier phases could not: **which of this
+target's endpoints are APIs, and how do we know?**
+
+It is reconnaissance. It adds no vulnerability detector, exploits nothing, and
+invokes nothing. An endpoint appearing in the API inventory means the scanner
+believes it behaves like an API — not that it is vulnerable, and not that it is
+safe. API classification is an input to the existing detectors, never a verdict
+of its own.
+
+### Evidence, in order of trust
+
+1. **What the response was.** `application/json`, `application/problem+json`,
+   `application/vnd.example.v2+json`, `application/xml` — the endpoint telling
+   us what it is. Nothing outranks that, and it is HIGH confidence.
+2. **What a specification said.** Corroboration from a document the target
+   published. Strong, but it describes intent rather than behaviour: MEDIUM.
+3. **What the URL looks like.** `/api/`, `/v1/`, `/rest/`, `/graphql`. A naming
+   convention, and naming conventions are wrong all the time: LOW on its own.
+
+**LOW is not an API.** A page at `/api/about` that returns HTML is a web page
+with an unfortunate URL, and counting it would make "14 API endpoints" mean
+nothing. The rejection is recorded and explained rather than silently dropped.
+
+One rule follows from the ordering and is worth stating plainly: **an
+observation beats a document that contradicts it.** If the crawl watched a path
+serve HTML, a specification listing that same path does not resurrect it. The
+document describes what someone intended; the response describes what happens.
+
+A body that parses as JSON upgrades a missing or wrong `Content-Type`, because
+an API that forgets its header is still an API.
+
+### Observed, documented, inferred
+
+Three states, deliberately never added together:
+
+| | Meaning |
+| --- | --- |
+| **Observed** | The scanner requested it and something answered. |
+| **Documented** | A specification says it exists. Nobody checked. |
+| **Documented only** | Described and never reached — not shown to exist at all. |
+
+`endpoints_observed` and `endpoints_documented_only` are separate counters, and
+the report says which is which on every row. Collapsing them is how an API
+inventory ends up describing operations that do not exist.
+
+### Identity
+
+`(method, path)`, with query values excluded. `/api/products?id=1` and
+`?id=2` are one endpoint with a parameter called `id` — the only representation
+that stays finite on a real site. A second discovery of the same operation
+**adds** to the first: sources union, confidence takes the stronger, the
+observed URL and the documented parameter list both survive. Overwriting would
+discard the very evidence that makes a record trustworthy.
+
+### JSON structure without JSON content
+
+The scanner wants to say "this endpoint returns objects with `id`, `email` and
+`role`", because that describes the interface being assessed. It must never say
+what was *in* those fields, because that is where the customer's email address,
+the session identifier and the API key live.
+
+So a JSON response is reduced to a `JsonShape`: a top-level type, a bounded list
+of field **names**, a depth and a count. Values are read while walking the
+structure and discarded with the parsed document.
+
+The summary is computed at the one moment the body is still in hand and about to
+be dropped — inside the crawler's capture step — so it costs no extra request,
+and `CapturedResponse` continues to hold no body. Both breadth and depth are
+bounded and say when they stopped, so a truncated field list is never mistaken
+for a whole interface. The call is wrapped: one unparseable body must not end a
+crawl that has already gathered fifty pages.
+
+### Specification discovery
+
+A small fixed set of conventional paths on the origin already being scanned:
+
+```
+/openapi.json   /swagger.json   /api-docs   /api/openapi.json
+/api/swagger.json   /v1/openapi.json   /swagger/v1/swagger.json
+/.well-known/openapi.json
+```
+
+Eight paths published by frameworks — **not a wordlist, and not the start of
+one.** There is no directory brute-forcer in this phase and there is not meant
+to be. `API_MAX_DOCUMENT_CANDIDATES` caps how many of the list are tried; it
+does not supply more, and `API_FETCH_DOCUMENTS=false` turns the traffic off
+entirely while leaving classification working.
+
+OpenAPI 3.x and Swagger 2.0 are both read: paths, methods, operation ids,
+parameters with their `in` location and requiredness, request and response media
+types, and declared security schemes. Parsing is total — a malformed or hostile
+document yields a partial result rather than an exception, because a target's
+broken JSON is not a reason to fail a scan. Path and parameter counts are
+bounded, and a document that hit a bound says so.
+
+**Nothing described by a specification is executed.** A documented `POST` or
+`DELETE` is recorded as an operation and never sent. Security schemes are
+metadata: learning that an API expects a bearer token does not make the scanner
+construct one, prompt for one, or try one.
+
+### GraphQL: presence, not exploitation
+
+Detected from the conventional path, from a GraphQL media type, or from the
+error envelope a server returns to a request it cannot serve. A plain `GET` to
+`/graphql` is enough — a GraphQL server answers one with an error that
+identifies it.
+
+**No introspection query is run. No query is sent. No mutation is sent. No field
+is guessed.** `introspection_tested` is reported as `false` explicitly, so a
+reader is never left to assume the scanner looked.
+
+### Authentication status, conservatively
+
+| Status | When |
+| ------ | ---- |
+| `ANONYMOUS_ACCESSIBLE` | 2xx on an unauthenticated scan |
+| `AUTHENTICATED_ACCESSIBLE` | 2xx while the scan was authenticated |
+| `AUTH_REQUIRED` | 401 |
+| `UNKNOWN` | everything else |
+
+A **403 yields UNKNOWN**, deliberately. It is returned for authorization
+failures, CSRF checks, IP restrictions and unsupported methods at least as often
+as for a missing credential. And a 2xx says which identity got in, never that
+another one would have been refused — Phase 12 answers that by actually
+comparing identities.
+
+### Integration, not duplication
+
+* **Phase 11.** Documentation discovery and authenticated crawling reuse the
+  existing `AuthenticationContext`. An authenticated scan sees the APIs behind
+  the login, and the credential is bound to the scan origin exactly as before.
+* **Phase 12.** Authorization testing keeps referring to paths, so an API
+  operation is represented once. No second identity system, no duplicate rows.
+* **Phases 6 and 8.** XSS and SQLi are untouched. An API endpoint stays eligible
+  for them under exactly the rules those detectors already had. API
+  classification never implies `API == vulnerable` or `API == safe`.
+* **Transport.** Every request goes through the same `HttpFetcher`. URL
+  validation, the SSRF guard, the exact-origin lock, per-hop redirect
+  re-validation, redirect limits, timeouts and the response cap all apply
+  unchanged. There is no API transport.
+
+Cancellation is honoured before each documentation candidate, and a cancelled
+scan keeps the classification it had already derived.
+
+### Storage
+
+`api_endpoints` links to the crawl row it was observed on, and a documented-only
+operation simply has none — that absence *is* the record of nobody having
+requested it. Writing documented operations into `endpoints` instead would
+inflate the crawl counters, enter the analysis-coverage totals, and make them
+eligible for authorization comparison against resources that may not exist.
+
+No column holds a response body, a parameter value, a credential or a header.
+`json_field_names` holds names.
+
+| Limit | Default | Setting |
+| ----- | ------: | ------- |
+| Documentation candidates | 8 | `API_MAX_DOCUMENT_CANDIDATES` |
+| Paths read per specification | 500 | `API_MAX_PARSED_PATHS` |
+| API endpoints per scan | 500 | `API_MAX_ENDPOINTS` |
+| Parameters per endpoint | 50 | `API_MAX_PARAMETERS_PER_ENDPOINT` |
+| JSON field names kept | 50 | `API_MAX_JSON_FIELDS` |
+| JSON depth walked | 6 | `API_MAX_JSON_DEPTH` |
+
+### API
+
+```
+GET /api/scans/{scan_id}/api-endpoints
+```
+
+Returns the endpoints, any specifications read, and the coverage summary. The
+report carries the same under `coverage.api`, including the endpoint table with
+`observed` and `documented_only` on every row.
+
+### What Phase 13 does not do
+
+**It does not test APIs.** It says which endpoints are APIs and how they were
+found. There is no API fuzzing, no automatic `POST`/`PUT`/`PATCH`/`DELETE`, no
+request body, no GraphQL query or mutation, no identifier enumeration and no
+path brute-forcing.
+
+**A specification is not an inventory of what works.** An operation listed in
+OpenAPI has not been shown to exist, and the report never implies the scanner
+tested every operation a document happens to mention.
+
+**Discovery is not exhaustive.** What is found is what a same-origin crawl
+reached plus what the target published at a conventional path. An API with no
+links to it and no published specification will not appear.
+
+---
+
 ## API overview
 
 All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
@@ -1825,6 +2019,7 @@ All endpoints are prefixed with `/api`. Every non-2xx response uses one shape:
 | GET    | `/api/scans/{scan_id}/findings` | yes | Deduplicated findings with endpoint context and occurrences |
 | GET    | `/api/scans/{scan_id}/endpoints` | yes | URLs the crawler reached, with parameter names |
 | GET    | `/api/scans/{scan_id}/forms` | yes | Forms found on crawled pages, with their fields |
+| GET    | `/api/scans/{scan_id}/api-endpoints` | yes | API attack surface: endpoints, specifications, GraphQL |
 | GET    | `/api/scans/{scan_id}/report` | yes | Canonical security report for one scan |
 | GET    | `/api/scans/{scan_id}/report/json` | yes | The same report as a JSON download |
 | POST   | `/api/scans/{scan_id}/cancel` | yes | Ask a queued or running scan to stop |
@@ -1905,6 +2100,24 @@ the server and mirrored by Zod in the browser; the server is authoritative.
 * **No enumeration.** Resources tested are the ones the crawler reached plus the ones you named.
   There is no identifier sweep and no path brute-forcer, so an object you did not name and the
   crawl did not find is not examined.
+* **API discovery is reconnaissance, not testing.** It says which endpoints behave like APIs and
+  how they were found. It runs no API-specific checks, sends no request body, invokes no
+  documented operation, and issues no GraphQL query or mutation. An API appearing in the
+  inventory has not been tested beyond the existing XSS and SQL-injection checks.
+* **A specification is a claim.** An operation listed in OpenAPI or Swagger has not been shown to
+  exist, reachable or working. Documented-only operations are counted and labelled separately
+  for exactly that reason.
+* **The API inventory is not exhaustive.** It covers what a same-origin crawl reached plus what
+  the target published at one of eight conventional documentation paths. An API with no inbound
+  link and no published specification will not be found — there is no path brute-forcer.
+* **JSON structure is summarised, never stored.** Field names are kept because they describe the
+  interface; no value from any response is retained, and both the field list and the depth walked
+  are bounded, so a truncated summary is reported as truncated rather than as the whole shape.
+* **Vendor `+json` media types are classified but not summarised.** The transport downloads
+  bodies for `application/json` and `text/*` but not for suffixed vendor types, so an endpoint
+  serving `application/vnd.example+json` is correctly identified as an API from its header while
+  its response structure is unavailable. Widening that would change what the XSS and SQLi
+  detectors read, which is out of scope here.
 * **Target authentication is presented, never obtained.** Credentials are supplied by the
   authorized user. There is no login automation, no OAuth, no SAML, no MFA handling, no browser
   engine, and nothing that discovers, guesses or brute-forces a credential.
@@ -2003,10 +2216,11 @@ Planned, in order. Everything from Phase 3 onward is unimplemented.
 | 9 | Reporting layer: canonical report, API, results page, JSON export | done |
 | 10 | Scan execution lifecycle: state machine, cancellation, progress | done |
 | 11 | Authorized authentication-aware scanning (bearer token, cookies) | done |
-| 12 | Authorization testing: anonymous, horizontal, vertical, object-level | **done - current release** |
-| 13 | TLS inspection, CORS policy, risk scoring | planned |
-| 14 | Further active testing: open redirect, API security checks | planned |
-| 15 | Additional export formats (PDF, SARIF), background execution | planned |
+| 12 | Authorization testing: anonymous, horizontal, vertical, object-level | done |
+| 13 | API discovery: classification, OpenAPI/Swagger, GraphQL presence | **done - current release** |
+| 14 | TLS inspection, CORS policy, risk scoring | planned |
+| 15 | Further active testing: open redirect, API security checks | planned |
+| 16 | Additional export formats (PDF, SARIF), background execution | planned |
 
 The attack surface discovered in Phase 4 is what later detectors will consume: endpoints and
 their parameters are the injection points an XSS or SQL-injection check needs, and forms are

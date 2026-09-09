@@ -19,6 +19,7 @@ from app.scanner.security.types import FindingData
 if TYPE_CHECKING:
     # Type-only: importing the auth package here at runtime would be circular,
     # since building an auth context needs this module's URL validator.
+    from app.scanner.api.types import ApiSurface
     from app.scanner.auth.types import AuthOutcome
     from app.scanner.authorization.types import AuthorizationOutcome
 
@@ -126,6 +127,11 @@ class ScanReport:
     #: user-chosen labels only — never a credential, never a response body.
     #: None until the stage has run.
     authorization: "AuthorizationOutcome | None" = None
+    #: What the API discovery stage concluded: which endpoints behave like
+    #: APIs, which specifications were found, whether GraphQL is present.
+    #: Structure and counters only — never a response body. None until the
+    #: stage has run.
+    api: "ApiSurface | None" = None
     #: Attack surface discovered by the crawler, when it ran.
     crawl: "CrawlResult | None" = None
     #: Per-endpoint analysis and the aggregated findings it produced.

@@ -35,6 +35,71 @@ export interface ReportAuthorization {
   has_policy: boolean;
 }
 
+/** One API parameter in a report. A name and a place, never a value. */
+export interface ReportApiParameter {
+  name: string;
+  location: string;
+  required: boolean | null;
+}
+
+export interface ReportApiEndpoint {
+  path: string;
+  method: string;
+  confidence: string;
+  sources: string[];
+  auth_status: string;
+  /** The scanner requested this and something answered. */
+  observed: boolean;
+  /** A specification says it exists. A claim, not a fact. */
+  documented: boolean;
+  documented_only: boolean;
+  status_code: number | null;
+  request_media_type: string | null;
+  response_media_type: string | null;
+  operation_id: string | null;
+  security: string[];
+  parameters: ReportApiParameter[];
+  /** Field names from a JSON response. Never a value from one. */
+  json_field_names: string[];
+  json_top_level: string | null;
+}
+
+export interface ReportApiDocument {
+  url: string;
+  version: string;
+  title: string | null;
+  path_count: number;
+  operation_count: number;
+  security_schemes: string[];
+  truncated: boolean;
+}
+
+/**
+ * What API discovery found.
+ *
+ * `endpoints_observed` and `endpoints_documented_only` are kept apart because
+ * adding them together would describe operations nobody has ever reached as
+ * though they were known to work.
+ */
+export interface ReportApiSurface {
+  detected: boolean;
+  endpoints_discovered: number;
+  endpoints_observed: number;
+  endpoints_documented_only: number;
+  parameters_discovered: number;
+  authenticated_endpoints: number;
+  unknown_auth_endpoints: number;
+  openapi_documents: number;
+  graphql_detected: boolean;
+  graphql_path: string | null;
+  /** Always false: this phase detects GraphQL and never queries it. */
+  graphql_introspection_tested: boolean;
+  truncated: boolean;
+  complete_inventory: boolean;
+  endpoints: ReportApiEndpoint[];
+  documents: ReportApiDocument[];
+}
+
 export interface ReportMetadata {
   scan_id: string;
   target_url: string;
@@ -78,6 +143,8 @@ export interface CoverageSummary {
   authentication_usable: boolean;
   /** Authorization testing, which is separate from authentication coverage. */
   authorization: ReportAuthorization;
+  /** API reconnaissance: a classification of the surface, not a test of it. */
+  api: ReportApiSurface;
   /**
    * True only when every discovered endpoint was analysed or deliberately
    * skipped, with no failures. A clean result with this false means the scan

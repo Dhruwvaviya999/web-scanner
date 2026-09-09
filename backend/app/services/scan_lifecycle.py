@@ -30,6 +30,7 @@ class ScanStage(str, enum.Enum):
     PROBING = "PROBING"
     CRAWLING = "CRAWLING"
     ANALYZING = "ANALYZING"
+    API_DISCOVERY = "API_DISCOVERY"
     AUTHORIZATION = "AUTHORIZATION"
     AGGREGATING = "AGGREGATING"
     FINALIZING = "FINALIZING"
@@ -47,6 +48,7 @@ STAGE_PROGRESS: dict[ScanStage, int | None] = {
     ScanStage.PROBING: 15,
     ScanStage.CRAWLING: 40,
     ScanStage.ANALYZING: 70,
+    ScanStage.API_DISCOVERY: 75,
     ScanStage.AUTHORIZATION: 80,
     ScanStage.AGGREGATING: 85,
     ScanStage.FINALIZING: 95,
@@ -62,6 +64,7 @@ STAGE_MESSAGE: dict[ScanStage, str] = {
     ScanStage.PROBING: "Fetching the target.",
     ScanStage.CRAWLING: "Discovering pages and inputs.",
     ScanStage.ANALYZING: "Analysing discovered endpoints.",
+    ScanStage.API_DISCOVERY: "Mapping the API attack surface.",
     ScanStage.AUTHORIZATION: "Comparing access across the supplied identities.",
     ScanStage.AGGREGATING: "Grouping findings.",
     ScanStage.FINALIZING: "Saving results.",

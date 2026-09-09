@@ -116,6 +116,25 @@ class Settings(BaseSettings):
     #: gets mistaken for a leaked record.
     AUTHZ_EQUIVALENCE_THRESHOLD: float = Field(default=0.95, gt=0.5, le=1.0)
 
+    # --- API discovery (phase 13) ---
+    # Reconnaissance, not exploitation. The only traffic this stage generates is
+    # a handful of GETs to conventional documentation paths on the origin
+    # already being scanned; the rest is classification of responses the crawl
+    # already paid for.
+    API_DISCOVERY_ENABLED: bool = True
+    #: Whether to request well-known specification paths at all. Turning this
+    #: off leaves classification working and sends nothing extra.
+    API_FETCH_DOCUMENTS: bool = True
+    #: Conventional documentation paths tried. Small and fixed: raising this
+    #: into the hundreds would turn discovery into path enumeration, which this
+    #: phase deliberately does not do.
+    API_MAX_DOCUMENT_CANDIDATES: int = Field(default=8, gt=0, le=16)
+    API_MAX_PARSED_PATHS: int = Field(default=500, gt=0, le=5000)
+    API_MAX_ENDPOINTS: int = Field(default=500, gt=0, le=5000)
+    API_MAX_PARAMETERS_PER_ENDPOINT: int = Field(default=50, gt=0, le=200)
+    API_MAX_JSON_FIELDS: int = Field(default=50, gt=0, le=200)
+    API_MAX_JSON_DEPTH: int = Field(default=6, gt=0, le=20)
+
     @field_validator("JWT_SECRET_KEY")
     @classmethod
     def _reject_placeholder_secret(cls, value: str) -> str:

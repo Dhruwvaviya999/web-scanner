@@ -20,6 +20,8 @@ import logging
 from app.scanner.analysis.aggregator import aggregate_findings
 from app.scanner.analysis.endpoint_analyzer import analyze_endpoint
 from app.scanner.analysis.types import AnalysisResult, EndpointAnalysisStatus
+from app.scanner.api.parser import summarize_body
+from app.scanner.api.types import JsonShape
 from app.scanner.cancellation import CancellationToken, ScanCancelled
 from app.scanner.crawler.types import CapturedResponse
 from app.scanner.crawler.url_normalizer import canonical_url
@@ -99,9 +101,24 @@ class EndpointAnalysisModule:
                     is_https=report.raw.is_https,
                     headers=dict(report.raw.headers),
                     set_cookie=report.raw.set_cookie,
+                    # Crawling is off, so this is the only response the scan
+                    # has. Summarising it here is what lets API classification
+                    # still recognise a JSON seed.
+                    json_shape=_safe_summary(report.raw.body),
                 ),
             )
         ]
+
+
+def _safe_summary(body: bytes) -> "JsonShape | None":
+    """Structure of a JSON body, or None. Never raises."""
+    if not body:
+        return None
+    try:
+        return summarize_body(body)
+    except Exception:  # noqa: BLE001 - a summary is never worth failing a scan
+        logger.debug("Could not summarise the seed response body", exc_info=True)
+        return None
 
 
 def _safe_analyze(url: str, response: CapturedResponse):

@@ -1,4 +1,5 @@
 import { API_BASE_URL, apiClient } from "@/lib/api-client";
+import type { ApiEndpointListResponse } from "@/types/api-surface";
 import type {
   EndpointListResponse,
   FormListResponse,
@@ -44,6 +45,17 @@ export const scanService = {
   /** URLs the crawler reached, with their query parameter names. */
   async endpoints(id: string): Promise<EndpointListResponse> {
     const { data } = await apiClient.get<EndpointListResponse>(`/scans/${id}/endpoints`);
+    return data;
+  },
+
+  /**
+   * The API attack surface: endpoints that behave like APIs, plus any
+   * specification found. Classification only — nothing here was invoked.
+   */
+  async apiEndpoints(id: string): Promise<ApiEndpointListResponse> {
+    const { data } = await apiClient.get<ApiEndpointListResponse>(
+      `/scans/${id}/api-endpoints`,
+    );
     return data;
   },
 

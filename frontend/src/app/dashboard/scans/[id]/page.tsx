@@ -8,6 +8,7 @@ import { ButtonLink } from "@/components/common/button-link";
 import { ErrorAlert } from "@/components/common/error-alert";
 import { FullPageLoader } from "@/components/common/full-page-loader";
 import { PageHeader } from "@/components/common/page-header";
+import { ApiSurfaceSection } from "@/components/api-surface/api-surface-section";
 import { AttackSurfaceSection } from "@/components/attack-surface/attack-surface-section";
 import { FindingsSection } from "@/components/findings/findings-section";
 import { AuthenticationBadge } from "@/components/scans/authentication-badge";
@@ -64,6 +65,14 @@ export default function ScanDetailPage({ params }: PageProps<"/dashboard/scans/[
     refresh: refreshForms,
   } = useAsyncData(fetchForms);
 
+  const fetchApi = useCallback(() => scanService.apiEndpoints(id), [id]);
+  const {
+    data: apiSurface,
+    loading: apiLoading,
+    error: apiError,
+    refresh: refreshApi,
+  } = useAsyncData(fetchApi);
+
   // A scan that has not reached a terminal state is re-read on a plain
   // interval. Results are re-read with it, so the page fills in as the scan
   // progresses rather than only once it ends.
@@ -73,7 +82,8 @@ export default function ScanDetailPage({ params }: PageProps<"/dashboard/scans/[
     refreshFindings();
     refreshEndpoints();
     refreshForms();
-  }, [refresh, refreshFindings, refreshEndpoints, refreshForms]);
+    refreshApi();
+  }, [refresh, refreshFindings, refreshEndpoints, refreshForms, refreshApi]);
   usePolling(poll, active ? SCAN_POLL_INTERVAL_MS : null);
 
   if (loading) return <FullPageLoader label="Loading scan…" />;
@@ -226,6 +236,8 @@ export default function ScanDetailPage({ params }: PageProps<"/dashboard/scans/[
         error={findingsError}
         scanFailed={failed}
       />
+
+      <ApiSurfaceSection data={apiSurface} loading={apiLoading} error={apiError} />
 
       <AttackSurfaceSection
         endpoints={endpoints}
