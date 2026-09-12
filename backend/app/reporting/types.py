@@ -234,6 +234,47 @@ class ReportApiSecurity:
 
 
 @dataclass(frozen=True, slots=True)
+class ReportSessionSecurity:
+    """What session analysis observed, and what it deliberately did not claim.
+
+    Two numbers need reading together. `csrf_strong` is the count that produced
+    findings; `csrf_potential` is the count that did not, and it is shown
+    because hiding it would misrepresent the result. A potential is a form where
+    several signals line up and a server-side defence could still exist — origin
+    validation, a required header, framework middleware, none of them visible
+    without forging a request, which this scanner does not do.
+
+    `timeout_known` being false is likewise not a weakness. Server-side session
+    expiry cannot be observed from outside, so "unknown" is the honest answer
+    and the report says unknown rather than implying "never expires".
+    """
+
+    analyzed: bool = False
+    session_cookies_identified: int = 0
+    session_identifiers_in_urls: int = 0
+    token_exposures: int = 0
+    csrf_forms_analyzed: int = 0
+    csrf_potential: int = 0
+    csrf_strong: int = 0
+    jwt_tokens_observed: int = 0
+    timeout_known: bool = False
+    logout_endpoints_discovered: int = 0
+    findings_count: int = 0
+    #: Requests this stage made. Zero by design, and stated rather than assumed.
+    requests_sent: int = 0
+
+    @property
+    def csrf_conclusive(self) -> bool:
+        """Whether the CSRF result can be read as settled.
+
+        False whenever any form landed on POTENTIAL: those are unresolved
+        questions, and a report that showed only the findings count would let
+        them read as an all-clear.
+        """
+        return self.analyzed and self.csrf_potential == 0
+
+
+@dataclass(frozen=True, slots=True)
 class ReportMetadata:
     """What was scanned, when, and how the scan ended."""
 
@@ -312,6 +353,11 @@ class CoverageSummary:
     #: What the read-only API security review found in those same responses.
     api_security: ReportApiSecurity = field(
         default_factory=lambda: ReportApiSecurity()
+    )
+    #: Session handling: where identifiers travelled, what tokens declare, and
+    #: how much can honestly be said about CSRF. Passive throughout.
+    session_security: ReportSessionSecurity = field(
+        default_factory=lambda: ReportSessionSecurity()
     )
 
     @property

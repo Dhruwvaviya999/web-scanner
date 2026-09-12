@@ -40,6 +40,8 @@ from app.scanner.crawler.url_normalizer import (
     path_of,
     query_parameter_names,
 )
+from app.scanner.session_security.token_analyzer import safe_find_tokens
+from app.scanner.session_security.types import JwtMetadata, SessionSignals
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +147,10 @@ class Crawler:
                     status_code=page.status_code,
                     content_type=page.content_type,
                 ),
+                # Same principle again: a JWT is recognised here and reduced to
+                # its algorithm and claim names before the body goes away. The
+                # token never leaves this line.
+                session_signals=_safe_session_signals(page),
             )
 
             # Only documents carry links and forms; a JSON or image response is
@@ -241,6 +247,29 @@ def _safe_summary(body: bytes) -> "JsonShape | None":
     except Exception:  # noqa: BLE001 - one bad body must not end the crawl
         logger.debug("Could not summarise a response body", exc_info=True)
         return None
+
+
+def _safe_session_signals(page: FetchedPage) -> "SessionSignals | None":
+    """Reduce any JSON Web Token in the response to safe metadata. Never raises.
+
+    Both the body and the `Set-Cookie` values are searched, because a token is
+    issued in one or the other. What survives is the algorithm label and the
+    claim *names*; the token, and every value in it, is discarded here — which
+    is the whole reason this runs at capture rather than later.
+    """
+    body_jwts = safe_find_tokens(page.body) if page.body else ()
+
+    cookie_jwts: list[tuple[str, JwtMetadata]] = []
+    for header in page.set_cookie:
+        name, _, value = header.partition("=")
+        if not value:
+            continue
+        for metadata in safe_find_tokens(value.split(";", 1)[0], limit=1):
+            cookie_jwts.append((name.strip(), metadata))
+
+    if not body_jwts and not cookie_jwts:
+        return None
+    return SessionSignals(body_jwts=body_jwts, cookie_jwts=tuple(cookie_jwts))
 
 
 def _page_title(page: FetchedPage) -> str | None:

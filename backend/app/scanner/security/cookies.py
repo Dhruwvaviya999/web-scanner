@@ -80,6 +80,12 @@ class CookieInfo:
     same_site: str | None = None
     domain: str | None = None
     path: str | None = None
+    #: The declared lifetime in seconds, when Max-Age was present and numeric.
+    #: Not used by the checks below; session-lifetime analysis reads it.
+    max_age: int | None = None
+    #: Whether an Expires attribute was present. The date itself is not kept:
+    #: knowing a lifetime was declared is all any caller needs.
+    has_expires: bool = False
 
 
 def parse_set_cookie(header: str) -> CookieInfo | None:
@@ -106,6 +112,8 @@ def parse_set_cookie(header: str) -> CookieInfo | None:
     same_site: str | None = None
     domain: str | None = None
     path: str | None = None
+    max_age: int | None = None
+    has_expires = False
 
     for segment in segments[1:]:
         attribute = segment.strip()
@@ -126,6 +134,15 @@ def parse_set_cookie(header: str) -> CookieInfo | None:
             domain = value
         elif key == "path" and value:
             path = value
+        elif key == "max-age" and value:
+            # A non-numeric Max-Age is invalid and browsers ignore it; so does
+            # this, rather than failing the parse of an otherwise usable cookie.
+            try:
+                max_age = int(value)
+            except ValueError:
+                max_age = None
+        elif key == "expires" and value:
+            has_expires = True
 
     return CookieInfo(
         name=name,
@@ -134,6 +151,8 @@ def parse_set_cookie(header: str) -> CookieInfo | None:
         same_site=same_site,
         domain=domain,
         path=path,
+        max_age=max_age,
+        has_expires=has_expires,
     )
 
 

@@ -28,6 +28,7 @@ from app.reporting.types import (
     ReportEndpointRef,
     ReportFinding,
     ReportMetadata,
+    ReportSessionSecurity,
     ScanReport,
     SeveritySummary,
     _SeverityTally,
@@ -204,6 +205,7 @@ def _coverage(
         authorization=_authorization(scan),
         api=_api_surface(scan, api_endpoints, api_documents),
         api_security=_api_security(scan),
+        session_security=_session_security(scan),
     )
 
 
@@ -227,6 +229,28 @@ def _api_security(scan: Scan) -> ReportApiSecurity:
         contexts_analyzed=scan.api_sec_contexts_analyzed or 0,
         unknown_policy=scan.api_sec_unknown_policy or 0,
         findings_count=scan.api_sec_findings or 0,
+    )
+
+
+def _session_security(scan: Scan) -> ReportSessionSecurity:
+    """Session coverage from the stored counters.
+
+    `or 0` throughout, as elsewhere: a NULL counter means the stage never
+    reached that number, which for a report is the same as zero. `analyzed` is
+    what separates "observed nothing" from "was never asked to look".
+    """
+    return ReportSessionSecurity(
+        analyzed=bool(scan.session_analyzed),
+        session_cookies_identified=scan.session_cookies_identified or 0,
+        session_identifiers_in_urls=scan.session_identifiers_in_urls or 0,
+        token_exposures=scan.session_token_exposures or 0,
+        csrf_forms_analyzed=scan.session_csrf_forms_analyzed or 0,
+        csrf_potential=scan.session_csrf_potential or 0,
+        csrf_strong=scan.session_csrf_strong or 0,
+        jwt_tokens_observed=scan.session_jwt_observed or 0,
+        timeout_known=bool(scan.session_timeout_known),
+        logout_endpoints_discovered=scan.session_logout_endpoints or 0,
+        findings_count=scan.session_findings or 0,
     )
 
 

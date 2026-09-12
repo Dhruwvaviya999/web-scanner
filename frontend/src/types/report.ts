@@ -125,6 +125,42 @@ export interface ReportApiSecurity {
   judged: boolean;
 }
 
+/**
+ * Session handling coverage. Every field is a boolean or a count — there is no
+ * field for a cookie value, a session identifier, a token or a JWT segment,
+ * because none of those ever reach the API.
+ *
+ * Read `csrf_potential` alongside `csrf_strong`. A potential is a form where
+ * several signals line up and a server-side defence could still exist: origin
+ * validation, a required header, framework middleware, none of them visible
+ * without forging a request, which the scanner never does. Only `csrf_strong`
+ * produced findings, and even those are unconfirmed.
+ */
+export interface ReportSessionSecurity {
+  analyzed: boolean;
+  session_cookies_identified: number;
+  session_identifiers_in_urls: number;
+  token_exposures: number;
+  csrf_forms_analyzed: number;
+  /** Worth reviewing. Deliberately never a finding on its own. */
+  csrf_potential: number;
+  /** The only verdict that produced a finding, and still unconfirmed. */
+  csrf_strong: number;
+  jwt_tokens_observed: number;
+  /**
+   * Whether anything established a session lifetime. False is not a weakness:
+   * server-side expiry cannot be observed from outside.
+   */
+  timeout_known: boolean;
+  /** Found and recorded. None of them was ever called. */
+  logout_endpoints_discovered: number;
+  findings_count: number;
+  /** Requests this stage made. Zero by design. */
+  requests_sent: number;
+  /** False whenever any form landed on POTENTIAL — not an all-clear. */
+  csrf_conclusive: boolean;
+}
+
 export interface ReportMetadata {
   scan_id: string;
   target_url: string;
@@ -172,6 +208,8 @@ export interface CoverageSummary {
   api: ReportApiSurface;
   /** The read-only API security review of those same responses. */
   api_security: ReportApiSecurity;
+  /** Session handling and CSRF posture. Passive: the stage sends nothing. */
+  session_security: ReportSessionSecurity;
   /**
    * True only when every discovered endpoint was analysed or deliberately
    * skipped, with no failures. A clean result with this false means the scan

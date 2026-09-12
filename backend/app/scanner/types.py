@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         AuthorizationObservation,
         AuthorizationOutcome,
     )
+    from app.scanner.session_security.types import SessionSecurityResult
 
 
 class ScanErrorCode(str, Enum):
@@ -139,6 +140,11 @@ class ScanReport:
     #: What the API security stage read out of those responses: exposed field
     #: names, verbose errors, unsafe CORS, inventory drift. None until it runs.
     api_security: "ApiSecurityResult | None" = None
+    #: What session analysis observed: which cookies carry session state, where
+    #: identifiers travelled, what tokens declare, and how much can honestly be
+    #: said about CSRF. Names, attributes and verdicts only — no token, no
+    #: cookie value, no field contents. None until the stage has run.
+    session_security: "SessionSecurityResult | None" = None
     #: Per-identity authorization observations, in memory for the length of the
     #: scan. They carry field *names* so the API security stage can ask the
     #: property-level question without repeating a request; nothing here is

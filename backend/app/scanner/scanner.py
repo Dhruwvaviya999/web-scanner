@@ -37,6 +37,8 @@ from app.scanner.types import (
     ScanModule,
     ScanReport,
 )
+from app.scanner.session_security.module import SessionSecurityModule
+from app.scanner.session_security.types import SessionSecurityConfig
 from app.scanner.url_validator import parse_target_url
 
 logger = logging.getLogger(__name__)
@@ -57,7 +59,11 @@ class WebScanner:
         authorization: AuthorizationPlan | None = None,
         api_config: ApiDiscoveryConfig | None = None,
         api_security_config: ApiSecurityConfig | None = None,
+        session_config: SessionSecurityConfig | None = None,
     ) -> None:
+        # Session analysis. Correlates cookies, URLs, forms and token metadata
+        # the earlier stages already captured; sends nothing.
+        self._session_config = session_config or SessionSecurityConfig()
         # API security analysis. Reads what the other stages captured; sends
         # nothing of its own.
         self._api_security_config = api_security_config or ApiSecurityConfig()
@@ -145,6 +151,16 @@ class WebScanner:
                     self._api_security_config,
                     self._cancellation,
                     self._authorization,
+                    self._authentication.configured,
+                ),
+                # After everything else, because it correlates across all of it:
+                # the cookies the probe and crawl collected, the URLs the crawl
+                # recorded, the forms it never submitted, and the token metadata
+                # computed at capture. It issues no request either.
+                SessionSecurityModule(
+                    self._config,
+                    self._session_config,
+                    self._cancellation,
                     self._authentication.configured,
                 ),
             ]

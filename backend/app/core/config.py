@@ -147,6 +147,25 @@ class Settings(BaseSettings):
     #: production TLS failure would be wrong far more often than right.
     API_SECURITY_FLAG_PLAINTEXT_HTTP: bool = False
 
+    # --- Session security and CSRF analysis (phase 15) ---
+    # Passive. The stage sends nothing: it correlates the cookies, URLs, forms
+    # and token metadata earlier phases already captured. The limits bound how
+    # much of that it retains, not how much traffic it generates.
+    SESSION_SECURITY_ENABLED: bool = True
+    SESSION_MAX_COOKIES: int = Field(default=100, gt=0, le=1000)
+    SESSION_MAX_URLS: int = Field(default=500, gt=0, le=5000)
+    SESSION_MAX_FORMS: int = Field(default=200, gt=0, le=2000)
+    SESSION_MAX_JWTS: int = Field(default=50, gt=0, le=500)
+    #: Requests this stage may make. Zero, and the module never reads it: the
+    #: ceiling exists so that a later phase adding fixture-only CSRF
+    #: verification has to raise it deliberately rather than by omission.
+    SESSION_MAX_REQUESTS: int = Field(default=0, ge=0, le=50)
+    #: Whether a session cookie set over plain HTTP is reported as a finding.
+    #: Off by default, matching API_SECURITY_FLAG_PLAINTEXT_HTTP and for the
+    #: same reason: local and development targets are HTTP, and grading each
+    #: one as a transport failure would be wrong more often than right.
+    SESSION_FLAG_PLAINTEXT_HTTP: bool = False
+
     @field_validator("JWT_SECRET_KEY")
     @classmethod
     def _reject_placeholder_secret(cls, value: str) -> str:

@@ -53,6 +53,10 @@ from app.scanner.api_security.types import ApiSecurityConfig, ApiSecurityLimits
 from app.scanner.authorization import AuthorizationConfig, AuthorizationBudgetLimits
 from app.scanner.authorization.matrix import AuthorizationPlan
 from app.scanner.security.types import FindingSeverity
+from app.scanner.session_security.types import (
+    SessionSecurityConfig,
+    SessionSecurityLimits,
+)
 from app.scanner import ActiveScanConfig, ProbeBudgetLimits
 from app.scanner.vulnerabilities.sqli.detector import SqlInjectionDetector
 from app.scanner.vulnerabilities.xss.detector import ReflectedXssDetector
@@ -90,6 +94,7 @@ MODULE_STAGE: dict[str, ScanStage] = {
     "api_security": ScanStage.API_SECURITY,
     "active_scan": ScanStage.ANALYZING,
     "authorization": ScanStage.AUTHORIZATION,
+    "session_security": ScanStage.SESSION_SECURITY_ANALYSIS,
 }
 
 
@@ -162,6 +167,26 @@ def _api_security_config() -> ApiSecurityConfig:
             max_property_comparisons=settings.API_SECURITY_MAX_PROPERTY_COMPARISONS,
         ),
         flag_plaintext_http=settings.API_SECURITY_FLAG_PLAINTEXT_HTTP,
+    )
+
+
+def _session_security_config() -> SessionSecurityConfig:
+    """Bounds for session analysis.
+
+    There is no request budget to spend: the stage reads what earlier phases
+    captured and sends nothing. `max_requests` is carried through so the
+    ceiling is visible in configuration rather than implied by silence.
+    """
+    return SessionSecurityConfig(
+        enabled=settings.SESSION_SECURITY_ENABLED,
+        limits=SessionSecurityLimits(
+            max_cookies=settings.SESSION_MAX_COOKIES,
+            max_urls=settings.SESSION_MAX_URLS,
+            max_forms=settings.SESSION_MAX_FORMS,
+            max_jwts=settings.SESSION_MAX_JWTS,
+            max_requests=settings.SESSION_MAX_REQUESTS,
+        ),
+        flag_plaintext_http=settings.SESSION_FLAG_PLAINTEXT_HTTP,
     )
 
 
@@ -341,6 +366,7 @@ def execute_scan(
             authorization=authorization,
             api_config=_api_config(),
             api_security_config=_api_security_config(),
+            session_config=_session_security_config(),
         ).scan_sync(target_url)
     except Exception:  # noqa: BLE001 - the scan must not be left RUNNING
         logger.exception("Scan %s raised while running", scan_id)
@@ -404,6 +430,7 @@ def _finish(scan_id: uuid.UUID, report: ScanReport, stage: _StageTracker) -> Sca
             db, scan, report.api, endpoints_by_url
         )
         _apply_api_security(scan, report)
+        _apply_session_security(scan, report)
 
         aggregated = report.analysis.findings if report.analysis else []
         finding_service.replace_findings(db, scan, aggregated, endpoints_by_url)
@@ -571,6 +598,32 @@ def _apply_api_security(scan: Scan, report: ScanReport) -> None:
     scan.api_sec_contexts_analyzed = stats.contexts_analyzed
     scan.api_sec_unknown_policy = stats.unknown_policy
     scan.api_sec_findings = stats.findings_count
+
+
+def _apply_session_security(scan: Scan, report: ScanReport) -> None:
+    """Record what session analysis observed.
+
+    Counters only. The observations carry cookie names, parameter names, claim
+    names and verdicts — never a cookie value, a token, a JWT segment or a form
+    field value — and the findings they produced have already gone into the
+    shared aggregation.
+    """
+    result = report.session_security
+    if result is None:
+        return
+
+    outcome = result.outcome()
+    scan.session_analyzed = outcome.analyzed
+    scan.session_cookies_identified = outcome.session_cookies_identified
+    scan.session_identifiers_in_urls = outcome.session_identifiers_in_urls
+    scan.session_token_exposures = outcome.token_exposures
+    scan.session_csrf_forms_analyzed = outcome.csrf_forms_analyzed
+    scan.session_csrf_potential = outcome.csrf_potential
+    scan.session_csrf_strong = outcome.csrf_strong
+    scan.session_jwt_observed = outcome.jwt_tokens_observed
+    scan.session_timeout_known = outcome.timeout_metadata_available
+    scan.session_logout_endpoints = outcome.logout_endpoints_discovered
+    scan.session_findings = outcome.findings_count
 
 
 def _apply_probe(scan: Scan, report: ScanReport) -> None:

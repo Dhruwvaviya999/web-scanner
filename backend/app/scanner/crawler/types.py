@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     # `crawler.types` import would pull the classifier in behind it.
     from app.scanner.api.types import JsonShape
     from app.scanner.api_security.types import ErrorSignal
+    from app.scanner.session_security.types import SessionSignals
 
 
 class ParameterLocation(str, enum.Enum):
@@ -167,6 +168,11 @@ class CapturedResponse:
     #: excerpt, nothing that could reproduce the disclosure being reported.
     #: Empty for every response that did not fail.
     error_signals: tuple["ErrorSignal", ...] = ()
+    #: Session-relevant metadata computed while the body was still in hand: the
+    #: algorithm and claim *names* of any JSON Web Token the response issued.
+    #: The tokens themselves are discarded with the body, so this cannot carry a
+    #: credential any more than `json_shape` can carry a value.
+    session_signals: "SessionSignals | None" = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,6 +195,7 @@ class FetchedPage:
         self,
         json_shape: "JsonShape | None" = None,
         error_signals: tuple["ErrorSignal", ...] = (),
+        session_signals: "SessionSignals | None" = None,
     ) -> CapturedResponse:
         """Reduce this page to what is safe to keep. The body is dropped here."""
         return CapturedResponse(
@@ -200,4 +207,5 @@ class FetchedPage:
             set_cookie=self.set_cookie,
             json_shape=json_shape,
             error_signals=error_signals,
+            session_signals=session_signals,
         )

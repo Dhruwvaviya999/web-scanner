@@ -10,6 +10,7 @@ import { PageHeader } from "@/components/common/page-header";
 import { FindingsSection } from "@/components/report/report-findings";
 import { ReportApiSection } from "@/components/report/report-api";
 import { ReportApiSecuritySection } from "@/components/report/report-api-security";
+import { ReportSessionSecuritySection } from "@/components/report/report-session-security";
 import {
   AuthorizationSummary,
   fromReport,
@@ -99,6 +100,7 @@ export default function ScanReportPage({ params }: PageProps<"/dashboard/scans/[
       <ReportApiSection api={report.coverage.api} />
 
       <ReportApiSecuritySection api={report.coverage.api_security} />
+      <ReportSessionSecuritySection session={report.coverage.session_security} />
 
       <AuthorizationSummary view={fromReport(report.coverage.authorization)} />
 

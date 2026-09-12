@@ -211,6 +211,39 @@ class Scan(Base, TimestampMixin):
     api_sec_unknown_policy: Mapped[int | None] = mapped_column(Integer, nullable=True)
     api_sec_findings: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # --- Session security analysis (phase 15) ---
+    # Counters over what the stage observed. There is deliberately no column for
+    # a cookie value, a session identifier, a bearer token, a JWT or any segment
+    # of one, a CSRF token, or a form field value: none of those reach this
+    # layer, so none can be stored.
+    #
+    # NULL means the stage did not run, distinct from "ran and found nothing".
+    session_analyzed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    session_cookies_identified: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    session_identifiers_in_urls: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    session_token_exposures: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    session_csrf_forms_analyzed: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    #: Forms where several signals line up but a server-side defence could still
+    #: exist. Counted and shown; deliberately never a finding on its own.
+    session_csrf_potential: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    session_csrf_strong: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    session_jwt_observed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: 1 when something established a session lifetime, 0 when nothing did.
+    #: Zero is not a weakness: server-side expiry is invisible from outside.
+    session_timeout_known: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    session_logout_endpoints: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    session_findings: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # --- Basic HTTP probe result ---
     # All nullable: a scan that failed, or has not run yet, has none of them.
     http_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)

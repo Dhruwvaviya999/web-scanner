@@ -121,6 +121,57 @@ class ReportApiSecurityRead(BaseModel):
     )
 
 
+class ReportSessionSecurityRead(BaseModel):
+    """Session coverage. Structurally incapable of holding a value.
+
+    Every field is a boolean or a count. There is no field for a cookie value, a
+    session identifier, a token, a JWT segment, a CSRF token or a form field
+    value, because none of those reach this layer.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    analyzed: bool
+    session_cookies_identified: int
+    session_identifiers_in_urls: int
+    token_exposures: int
+    csrf_forms_analyzed: int
+    csrf_potential: int = Field(
+        description=(
+            "Forms where several signals line up but a server-side defence could "
+            "still exist. Shown, and deliberately never a finding: the absence of "
+            "a visible CSRF token is not evidence that CSRF is exploitable."
+        )
+    )
+    csrf_strong: int = Field(
+        description=(
+            "Forms where the browser's own SameSite defence does not apply either. "
+            "The only verdict that produces a finding, and still unconfirmed: no "
+            "request was forged to test it."
+        )
+    )
+    jwt_tokens_observed: int
+    timeout_known: bool = Field(
+        description=(
+            "Whether anything established a session lifetime. False is not a "
+            "weakness — server-side expiry cannot be observed from outside."
+        )
+    )
+    logout_endpoints_discovered: int = Field(
+        description="Found and recorded. None of them was ever called."
+    )
+    findings_count: int
+    requests_sent: int = Field(
+        description="Requests this stage made. Zero by design."
+    )
+    csrf_conclusive: bool = Field(
+        description=(
+            "False whenever any form landed on POTENTIAL. Those are unresolved "
+            "questions, not an all-clear."
+        )
+    )
+
+
 class ReportApiSurfaceRead(BaseModel):
     """The API attack surface. No response body, no credential, no header."""
 
@@ -230,6 +281,7 @@ class CoverageSummaryRead(BaseModel):
     authorization: ReportAuthorizationRead
     api: ReportApiSurfaceRead
     api_security: ReportApiSecurityRead
+    session_security: ReportSessionSecurityRead
     authentication_usable: bool = Field(
         description=(
             "False when credentials were supplied and the target refused them, so "

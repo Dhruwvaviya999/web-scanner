@@ -299,7 +299,7 @@ Always change the schema through a migration; never edit the database by hand.
 
 ```bash
 cd backend
-.venv\Scripts\python -m pytest          # 776 tests
+.venv\Scripts\python -m pytest          # 881 tests
 ```
 
 | Suite | Covers |
@@ -327,6 +327,7 @@ cd backend
 | `test_authorization_testing.py` | Policy matching, access comparison, horizontal/vertical/object-level checks, budget, leakage |
 | `test_api_discovery.py` | API classification, JSON structure, OpenAPI/Swagger parsing, GraphQL detection, budgets, leakage |
 | `test_api_security.py` | Field classification and its false-positive controls, property comparison, verbose errors, CORS, inventory, leakage |
+| `test_session_security.py` | Session cookie classification and its exclusions, identifiers in URLs, the CSRF verdict scale and what it refuses to claim, JWT metadata, timeout honesty, leakage |
 
 The detector and crawler suites need no network: the crawler's page fetcher is injected, so
 limits, cycles and failure handling are deterministic. The API suites drive the real app through
@@ -2144,6 +2145,177 @@ GraphQL query. No credential attacks, no data extraction, no blind or time-based
 SQL injection. It provokes no error and sends no request of its own — every
 input was captured by an earlier phase.
 
+## Session security and conservative CSRF analysis (Phase 15)
+
+Phase 15 reasons about how a target handles sessions: which cookies carry
+session state, where session identifiers travel, what tokens declare about
+themselves, and how much can honestly be said about CSRF.
+
+**It sends nothing.** Every input already exists when the stage runs — the
+`Set-Cookie` headers the crawler kept, the canonical URLs it recorded, the forms
+it found and never submitted, the JWT metadata computed at capture while the
+body was still in hand. The configured request budget is `0`, and the module
+never consults it, because it makes no request at all.
+
+That is not a limitation to apologise for. Every question this phase could
+answer more confidently requires *attacking* a session: forging a request to
+test CSRF, replaying a cookie to test binding, holding one open to test expiry.
+None of that happens, which is what makes the stage safe to run against a target
+somebody else owns.
+
+### The rule that governs the phase
+
+**Observe, classify, correlate, report — and stop there.** A token-shaped string
+is not a vulnerability. A cookie named `token` might be a CSRF token, a
+pagination cursor or a feature flag. Where the evidence runs out the verdict is
+`UNKNOWN` or `POTENTIAL`, never "confirmed".
+
+### The absence of a CSRF token is not proof of CSRF
+
+This is the single most important thing to understand about this phase, and the
+reason its CSRF output looks quieter than other scanners'.
+
+A form with no hidden anti-CSRF token field may be protected by any of:
+
+* `Origin` or `Referer` validation on the server;
+* a required custom header, which a cross-site form post cannot set;
+* framework middleware reading a token from a header rather than a field;
+* double-submit cookies;
+* most often, the browser's own `SameSite=Lax` default, which stops a
+  cross-site `POST` from carrying the session cookie at all.
+
+**None of those is visible from outside without submitting a forged request**,
+which this scanner does not do. So the absence of a visible CSRF token is an
+absence of *evidence*, not evidence of absence, and the phase grades accordingly:
+
+| Verdict | Meaning | Finding? |
+| ------- | ------- | -------- |
+| `NONE` | A token field is present, or the form cannot change state. | No |
+| `UNKNOWN` | The evidence runs out — no session cookie was seen, or the form posts to another origin. | No |
+| `POTENTIAL` | State-changing, no visible token, a session cookie exists. Worth review. | **No** |
+| `STRONG` | All of the above *and* the session cookie declares `SameSite=None`, which rules out the browser's own defence. | Yes |
+
+Only `STRONG` produces a finding, and even that one is worded as *this defence
+was not observed*, carries `MEDIUM` confidence, and tells the reader to verify by
+hand. `POTENTIAL` counts are shown in the report precisely so they cannot be
+mistaken for an all-clear.
+
+Two further restraints:
+
+* **A `GET` form is not assumed to change state.** Some do. Treating every search
+  box as a CSRF candidate would bury the forms that matter.
+* **A login form never reaches `STRONG`.** Login CSRF is real, and it forges a
+  session *into* a victim's browser rather than an action out of one. Different
+  weight, so it stops at `POTENTIAL`.
+
+### Session cookie classification
+
+Phase 3 already parses `Set-Cookie` and reports missing `Secure`, `HttpOnly` and
+`SameSite`. **None of that is repeated.** This phase answers a different
+question — is this cookie carrying session state? — so later analysis can reason
+about the cookies that matter.
+
+The exclusions are where the value is. An analytics cookie that persists for two
+years is not session state, and a locale preference is not a credential;
+classifying them as either would put a security finding on every site with a
+tracking tag. So `_ga`, `_fbp`, `__utma`, `theme`, `locale` and `cookie_consent`
+are recognised and ruled out **before** any session rule runs. CSRF cookies are
+excluded too: they are meant to be readable by the page, so an `HttpOnly`
+expectation on one would be wrong.
+
+| Confidence | Basis |
+| ---------- | ----- |
+| `HIGH_CONFIDENCE_SESSION` | A framework name (`JSESSIONID`, `PHPSESSID`, `connect.sid`), or a suggestive name backed by `HttpOnly` *and* `SameSite`. |
+| `LIKELY_SESSION` | A session or auth word as a whole segment. |
+| `UNKNOWN` | Not enough to say. The default, and not a finding. |
+
+Across the scan, the **worst** sighting of each cookie wins: set with `Secure` on
+one endpoint and without it on another means exposed, and reporting the protected
+sighting would describe the target more kindly than it is.
+
+`SESSION_COOKIE_TRANSPORT` covers exactly one case — a session cookie issued by a
+plain-HTTP response — because Phase 3 already owns HTTPS-without-`Secure` and
+deliberately skips `Secure` on plaintext, where a browser ignores it anyway. It
+is off by default (`SESSION_FLAG_PLAINTEXT_HTTP`), for the same reason Phase 14
+turns off its equivalent: every local and development target is HTTP.
+
+### Session identifiers in URLs
+
+A session identifier in a URL reaches browser history, the `Referer` header sent
+to every third-party resource the page loads, and server, proxy and CDN logs.
+The phase finds them **by name** and never reads a value — the crawler already
+stores canonical URLs with query values stripped.
+
+Restraint again decides whether this is useful. `id` is the most common parameter
+name on the web; `token` might be a pagination cursor. So the table is narrow,
+whole-segment matched, and has an explicit exclusion list covering `id`,
+`user_id`, `page`, `cursor`, `token_type`, `csrf_token`, `state` and `nonce`.
+Query parameters, servlet-style `;jsessionid=` path parameters, `Location`
+redirect targets and JSON response field names are all covered.
+
+### JSON Web Tokens: recognition only
+
+The phase reads the two segments a JWT publishes by design, records the
+algorithm label and the **names** of the claims, and discards the token. It does
+not verify a signature, crack one, forge a token, strip an algorithm, replay a
+token anywhere, or send one to any destination.
+
+Only three things are reported, each defensible on its own: `alg: none`, a
+missing `exp` claim, and claim *names* suggesting sensitive content. A mainstream
+algorithm is not a weakness, and the scanner refuses to say it is — that would be
+wrong on most of the internet.
+
+### Session expiry: unknown is the honest answer
+
+A session cookie with no `Max-Age` and no `Expires` is a *browser-session*
+cookie: it lasts until the browser closes. That says nothing about whether the
+**server** expires the session, which is the thing that matters and is invisible
+from outside.
+
+So the report says `BROWSER_SESSION` or `UNKNOWN`, raises an `INFO` observation,
+and **never** claims "the session never expires". The report's `timeout_known`
+flag is false in both cases, so it can never contradict the observation beside it.
+
+Logout endpoints are found and recorded, and **never called**. Invoking logout
+mid-scan would destroy the session every later stage depends on, and a `200`
+response proves nothing about whether the server invalidated anything.
+
+### Rules
+
+All are category `SESSION_SECURITY`. **None is `CRITICAL`** — this phase observes
+structure and confirms no exploitability, so reserving the top grade for
+something it never establishes would be dishonest.
+
+| Rule | Fires when |
+| ---- | ---------- |
+| `SESSION_TOKEN_IN_URL` | A session identifier appeared in a query string, path parameter or redirect target. |
+| `SESSION_TOKEN_EXPOSURE` | A credential-like parameter or a session field name surfaced where it can be read. |
+| `SESSION_COOKIE_TRANSPORT` | A session cookie was issued over plain HTTP. Off by default. |
+| `SESSION_CSRF_POTENTIAL` | A `STRONG` verdict only. Never fires on `POTENTIAL`. |
+| `SESSION_JWT_WEAKNESS` | A token declares `alg: none`, no expiry, or sensitive claim names. |
+| `SESSION_TIMEOUT_UNKNOWN` | Nothing established when a session expires. `INFO`. |
+| `SESSION_INFORMATION_DISCLOSURE` | A framework-default session cookie name identifies the stack. |
+
+### What never reaches a finding
+
+Cookie names, parameter names, claim names, form actions, attributes, verdicts
+and counts. **Never** a session cookie value, a bearer token, a JWT or any
+segment of one, a CSRF token value, a hidden field's contents, a password, an API
+key or an `Authorization` header. The evidence says:
+
+> Session-like parameter `sessionid` observed as a query parameter on /dashboard.
+
+and never what it carried. The database schema reflects this: every Phase 15
+column is an integer or a boolean, so there is nowhere for a value to be stored
+even if one reached that far.
+
+### What Phase 15 does not do
+
+No credential attacks. No password guessing. No session hijacking, fixation or
+replay. No token cracking or forging. No logout invocation. No automatic
+submission of any `POST`, `PUT`, `PATCH` or `DELETE` form. No blind or
+time-based SQL injection, and no data extraction. It sends no request of its own.
+
 ---
 
 ## API overview
@@ -2256,8 +2428,9 @@ the server and mirrored by Zod in the browser; the server is authoritative.
 
 * **A limited, specific set of checks.** A scan fetches the target, crawls the same origin,
   assesses security headers and cookies, and runs conservative reflected-XSS and SQL-injection
-  checks against discovered GET query parameters. That is the whole of it: no TLS analysis, no
-  CORS analysis, no CSRF, SSRF, IDOR or open-redirect testing, and no authorization testing.
+  checks against discovered GET query parameters. That is the whole of the active testing: no TLS
+  analysis, no SSRF or open-redirect testing, and no CSRF *verification* — the CSRF analysis in
+  Phase 15 is passive and forges nothing.
 * **Authorization testing needs a declared policy, and tests only what it is given.** The
   scanner compares identities you supply and judges the result against expectations you write.
   A resource nobody wrote a rule for is reported as unknown, never as a pass and never as a
@@ -2285,6 +2458,22 @@ the server and mirrored by Zod in the browser; the server is authoritative.
   and error signals; it never inspects a value. A field called `phone` is treated the same
   whether it holds a phone number or an empty string, and a field holding a secret under an
   innocuous name is not detected at all.
+* **The absence of a CSRF token is not proof that CSRF is exploitable.** Origin validation, a
+  required custom header, framework middleware and the browser's own `SameSite=Lax` default all
+  defeat an attack and are invisible to a passive scan. Only the one case that rules the last of
+  those out — a session cookie declaring `SameSite=None` — produces a finding, and even that is
+  reported as unverified. Everything else is counted as `POTENTIAL` and shown, never claimed.
+* **Session analysis sends nothing, so several session questions cannot be answered.** Session
+  fixation, identifier predictability, cookie-to-IP binding and concurrent-session handling all
+  require attacking or replaying a session, which the scanner does not do.
+* **A missing `Max-Age` is not "the session never expires".** Server-side expiry cannot be
+  observed from outside. When nothing establishes a lifetime the report says unknown, and that is
+  neither a pass nor a finding.
+* **Logout endpoints are recorded, never called.** Whether the server actually invalidates a
+  session on logout is not tested; a `200` from a logout URL would not establish it anyway.
+* **JWTs are recognised, not evaluated.** The scanner reads the algorithm label and the claim
+  names a token publishes and discards the token. It verifies no signature, so a token signed
+  with a weak or leaked key is indistinguishable here from a correctly signed one.
 * **Most sensitive-field observations are unjudgeable without a policy.** Whether an API should
   return a given field depends on the application, so unless the field is a secret by
   construction — a password hash, a private key, a connection string — the scanner needs a
@@ -2401,14 +2590,15 @@ Planned, in order. Everything from Phase 3 onward is unimplemented.
 | 11 | Authorized authentication-aware scanning (bearer token, cookies) | done |
 | 12 | Authorization testing: anonymous, horizontal, vertical, object-level | done |
 | 13 | API discovery: classification, OpenAPI/Swagger, GraphQL presence | done |
-| 14 | API security baseline: sensitive data, verbose errors, CORS, inventory | **done - current release** |
-| 15 | TLS inspection and risk scoring | planned |
-| 16 | Further active testing: open redirect, CSRF | planned |
-| 17 | Additional export formats (PDF, SARIF), background execution | planned |
+| 14 | API security baseline: sensitive data, verbose errors, CORS, inventory | done |
+| 15 | Session security and conservative CSRF analysis | **done - current release** |
+| 16 | TLS inspection and risk scoring | planned |
+| 17 | Further active testing: open redirect, CSRF verification | planned |
+| 18 | Additional export formats (PDF, SARIF), background execution | planned |
 
-The attack surface discovered in Phase 4 is what later detectors will consume: endpoints and
-their parameters are the injection points an XSS or SQL-injection check needs, and forms are
-what a CSRF check examines. Each detector becomes a `ScanModule` behind the protocol already
+The attack surface discovered in Phase 4 is what later detectors consume: endpoints and
+their parameters are the injection points an XSS or SQL-injection check needs, and the forms it
+records are what Phase 15's CSRF analysis examines. Each detector becomes a `ScanModule` behind the protocol already
 defined in
 `backend/app/scanner/types.py`, registered in the `WebScanner` orchestrator. The API and database
 layers do not need to change to accommodate them.

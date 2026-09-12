@@ -63,6 +63,10 @@ class FindingCategory(str, enum.Enum):
     #: API-specific weaknesses read from responses earlier phases already
     #: fetched: exposed fields, verbose errors, unsafe CORS, inventory drift.
     API_SECURITY = "API_SECURITY"
+    #: Session handling: where identifiers travel, what tokens declare about
+    #: themselves, and whether a state-changing form shows any CSRF defence.
+    #: Passive throughout — Phase 15 never forges, replays or fixes a session.
+    SESSION_SECURITY = "SESSION_SECURITY"
     INFORMATION_DISCLOSURE = "INFORMATION_DISCLOSURE"
     OTHER = "OTHER"
 
@@ -127,6 +131,30 @@ class FindingRule(str, enum.Enum):
     AUTHZ_VERTICAL_ACCESS = "AUTHZ_VERTICAL_ACCESS"
     #: An object whose declared owner is a different identity was served.
     AUTHZ_OBJECT_LEVEL_ACCESS = "AUTHZ_OBJECT_LEVEL_ACCESS"
+
+    # --- Session security (phase 15) ---
+    #: A session identifier appeared in a URL, where it reaches browser history,
+    #: the Referer header and every log between here and the server.
+    SESSION_TOKEN_IN_URL = "SESSION_TOKEN_IN_URL"
+    #: A credential-like token surfaced somewhere it can be read — a redirect
+    #: target, a hidden field, an API response field. Names only, never values.
+    SESSION_TOKEN_EXPOSURE = "SESSION_TOKEN_EXPOSURE"
+    #: A session cookie can reach the network without TLS protection. Distinct
+    #: from the Phase 3 cookie-attribute rules: this correlates across the scan.
+    SESSION_COOKIE_TRANSPORT = "SESSION_COOKIE_TRANSPORT"
+    #: A state-changing form shows no CSRF defence this scanner can see, and the
+    #: browser's own SameSite defence does not apply. Never a confirmed exploit:
+    #: no request is forged, so a server-side defence may still exist.
+    SESSION_CSRF_POTENTIAL = "SESSION_CSRF_POTENTIAL"
+    #: A JWT declares something worth review — alg none, no expiry, or claim
+    #: names suggesting it carries more than an identity.
+    SESSION_JWT_WEAKNESS = "SESSION_JWT_WEAKNESS"
+    #: Nothing observable establishes when the session expires. Informational,
+    #: and explicitly not a claim that it never does.
+    SESSION_TIMEOUT_UNKNOWN = "SESSION_TIMEOUT_UNKNOWN"
+    #: Session handling revealed something about the stack or its state that a
+    #: client did not need to know.
+    SESSION_INFORMATION_DISCLOSURE = "SESSION_INFORMATION_DISCLOSURE"
 
     # --- Cookies ---
     COOKIE_SECURE_MISSING = "COOKIE_SECURE_MISSING"
