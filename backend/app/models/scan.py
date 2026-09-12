@@ -280,6 +280,27 @@ class Scan(Base, TimestampMixin):
     config_findings: Mapped[int | None] = mapped_column(Integer, nullable=True)
     config_budget_exhausted: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
+    # --- Path traversal / local file inclusion (phase 17) ---
+    # Counters only. There is deliberately no column for a file's contents, the
+    # canary bytes, a probe value or a response body: none reaches this layer,
+    # so none can be stored.
+    #
+    # NULL means the stage did not run, distinct from "ran and found nothing".
+    path_analyzed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    path_parameters_considered: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    path_file_parameters: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    path_parameters_tested: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    path_parameters_skipped: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    path_endpoints_tested: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    path_traversal_probes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    path_canary_matches: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    path_lfi_candidates: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    path_requests_sent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    path_findings: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    path_budget_exhausted: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
     # --- Basic HTTP probe result ---
     # All nullable: a scan that failed, or has not run yet, has none of them.
     http_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)

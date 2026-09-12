@@ -319,6 +319,48 @@ class ReportConfigSecurity:
 
 
 @dataclass(frozen=True, slots=True)
+class ReportPathSecurity:
+    """What path-traversal / LFI testing found.
+
+    `canary_matches` is the load-bearing number: a match means the controlled
+    marker was returned from outside the intended directory, which is the only
+    evidence this stage treats as a finding. Everything else is coverage —
+    how many file-like parameters were considered, tested, or skipped — and a
+    skipped parameter established nothing, so it is never read as safe.
+
+    Nothing here can hold content. Every field is a boolean or a count, because
+    the detector reduces each response to a marker boolean and discards the body.
+    """
+
+    analyzed: bool = False
+    parameters_considered: int = 0
+    file_parameters: int = 0
+    parameters_tested: int = 0
+    parameters_skipped: int = 0
+    endpoints_tested: int = 0
+    traversal_probes: int = 0
+    canary_matches: int = 0
+    lfi_candidates: int = 0
+    requests_sent: int = 0
+    findings_count: int = 0
+    budget_exhausted: bool = False
+
+    @property
+    def coverage_complete(self) -> bool:
+        """Whether every file-like parameter considered was actually tested.
+
+        False when a budget cut the run short or a baseline was unusable, so
+        silence about the remainder is absence of evidence, not evidence of
+        absence.
+        """
+        if not self.analyzed:
+            return False
+        if self.budget_exhausted:
+            return False
+        return self.parameters_skipped == 0
+
+
+@dataclass(frozen=True, slots=True)
 class ReportMetadata:
     """What was scanned, when, and how the scan ended."""
 
@@ -407,6 +449,11 @@ class CoverageSummary:
     #: requests, and the only one whose coverage can be cut short by a budget.
     config_security: ReportConfigSecurity = field(
         default_factory=lambda: ReportConfigSecurity()
+    )
+    #: File/path parameter testing: what looked file-like, what was probed, and
+    #: whether a controlled traversal canary was retrieved. Active, canary-based.
+    path_security: ReportPathSecurity = field(
+        default_factory=lambda: ReportPathSecurity()
     )
 
     @property

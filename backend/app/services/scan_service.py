@@ -57,6 +57,7 @@ from app.scanner.config_security.types import (
     ConfigSecurityConfig,
     ConfigSecurityLimits,
 )
+from app.scanner.path_security.types import PathSecurityConfig, PathSecurityLimits
 from app.scanner.session_security.types import (
     SessionSecurityConfig,
     SessionSecurityLimits,
@@ -100,6 +101,7 @@ MODULE_STAGE: dict[str, ScanStage] = {
     "authorization": ScanStage.AUTHORIZATION,
     "session_security": ScanStage.SESSION_SECURITY_ANALYSIS,
     "config_security": ScanStage.CONFIGURATION_SECURITY,
+    "path_security": ScanStage.PATH_SECURITY,
 }
 
 
@@ -218,6 +220,27 @@ def _config_security_config() -> ConfigSecurityConfig:
         ),
         require_https=settings.CONFIG_SECURITY_REQUIRE_HTTPS,
         probe_candidates=settings.CONFIG_SECURITY_PROBE_CANDIDATES,
+    )
+
+
+def _path_security_config() -> PathSecurityConfig:
+    """Bounds for path-traversal / LFI testing.
+
+    Active, so the budget is a real ceiling. The traversal variant set is a
+    fixed constant in the payload module; these numbers cap how much of the
+    surface it touches, and the per-scan probe budget fails closed.
+    """
+    return PathSecurityConfig(
+        enabled=settings.PATH_SECURITY_ENABLED,
+        limits=PathSecurityLimits(
+            max_parameters_per_endpoint=settings.PATH_SECURITY_MAX_PARAMETERS_PER_ENDPOINT,
+            max_variants_per_parameter=settings.PATH_SECURITY_MAX_VARIANTS_PER_PARAMETER,
+            max_targets=settings.PATH_SECURITY_MAX_TARGETS,
+            max_probes_per_scan=settings.PATH_SECURITY_MAX_PROBES_PER_SCAN,
+            per_parameter_budget=settings.PATH_SECURITY_PER_PARAMETER_BUDGET,
+            per_endpoint_budget=settings.PATH_SECURITY_PER_ENDPOINT_BUDGET,
+            max_response_bytes=settings.PATH_SECURITY_MAX_RESPONSE_BYTES,
+        ),
     )
 
 
@@ -399,6 +422,7 @@ def execute_scan(
             api_security_config=_api_security_config(),
             session_config=_session_security_config(),
             config_security=_config_security_config(),
+            path_security=_path_security_config(),
         ).scan_sync(target_url)
     except Exception:  # noqa: BLE001 - the scan must not be left RUNNING
         logger.exception("Scan %s raised while running", scan_id)
@@ -464,6 +488,7 @@ def _finish(scan_id: uuid.UUID, report: ScanReport, stage: _StageTracker) -> Sca
         _apply_api_security(scan, report)
         _apply_session_security(scan, report)
         _apply_config_security(scan, report)
+        _apply_path_security(scan, report)
 
         aggregated = report.analysis.findings if report.analysis else []
         finding_service.replace_findings(db, scan, aggregated, endpoints_by_url)
@@ -690,6 +715,33 @@ def _apply_config_security(scan: Scan, report: ScanReport) -> None:
     scan.config_requests_sent = outcome.requests_sent
     scan.config_findings = outcome.findings_count
     scan.config_budget_exhausted = outcome.budget_exhausted
+
+
+def _apply_path_security(scan: Scan, report: ScanReport) -> None:
+    """Record what path-security testing observed.
+
+    Counters only. The observations carry parameter names, verdicts, status
+    codes and media types — never a file's contents, the canary bytes, a probe
+    value or a response body — and the findings they produced have already gone
+    into the shared aggregation.
+    """
+    result = report.path_security
+    if result is None:
+        return
+
+    outcome = result.outcome()
+    scan.path_analyzed = outcome.analyzed
+    scan.path_parameters_considered = outcome.parameters_considered
+    scan.path_file_parameters = outcome.file_parameters
+    scan.path_parameters_tested = outcome.parameters_tested
+    scan.path_parameters_skipped = outcome.parameters_skipped
+    scan.path_endpoints_tested = outcome.endpoints_tested
+    scan.path_traversal_probes = outcome.traversal_probes
+    scan.path_canary_matches = outcome.canary_matches
+    scan.path_lfi_candidates = outcome.lfi_candidates
+    scan.path_requests_sent = outcome.requests_sent
+    scan.path_findings = outcome.findings_count
+    scan.path_budget_exhausted = outcome.budget_exhausted
 
 
 def _apply_probe(scan: Scan, report: ScanReport) -> None:

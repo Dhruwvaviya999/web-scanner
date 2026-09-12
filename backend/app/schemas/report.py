@@ -220,6 +220,48 @@ class ReportConfigSecurityRead(BaseModel):
     )
 
 
+class ReportPathSecurityRead(BaseModel):
+    """Path-security coverage. Structurally incapable of holding content.
+
+    Every field is a boolean or a count. There is no field for a file's
+    contents, the canary bytes, a probe value or a response body, because none
+    of those reach this layer.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    analyzed: bool
+    parameters_considered: int
+    file_parameters: int = Field(
+        description="Parameters that looked like file or path inputs."
+    )
+    parameters_tested: int
+    parameters_skipped: int = Field(
+        description=(
+            "File-like parameters not tested — an unusable baseline or a budget "
+            "cut. They established nothing and must not be read as clean."
+        )
+    )
+    endpoints_tested: int
+    traversal_probes: int
+    canary_matches: int = Field(
+        description=(
+            "Times a controlled traversal canary was returned from outside the "
+            "intended directory. The only evidence treated as a finding."
+        )
+    )
+    lfi_candidates: int
+    requests_sent: int
+    findings_count: int
+    budget_exhausted: bool
+    coverage_complete: bool = Field(
+        description=(
+            "False when a budget or an unusable baseline left file-like "
+            "parameters untested, so silence about them is not an all-clear."
+        )
+    )
+
+
 class ReportApiSurfaceRead(BaseModel):
     """The API attack surface. No response body, no credential, no header."""
 
@@ -331,6 +373,7 @@ class CoverageSummaryRead(BaseModel):
     api_security: ReportApiSecurityRead
     session_security: ReportSessionSecurityRead
     config_security: ReportConfigSecurityRead
+    path_security: ReportPathSecurityRead
     authentication_usable: bool = Field(
         description=(
             "False when credentials were supplied and the target refused them, so "

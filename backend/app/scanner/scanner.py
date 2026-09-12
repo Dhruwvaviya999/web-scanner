@@ -38,7 +38,9 @@ from app.scanner.types import (
     ScanReport,
 )
 from app.scanner.config_security.module import ConfigSecurityModule
+from app.scanner.path_security.module import PathSecurityModule
 from app.scanner.config_security.types import ConfigSecurityConfig
+from app.scanner.path_security.types import PathSecurityConfig
 from app.scanner.session_security.module import SessionSecurityModule
 from app.scanner.session_security.types import SessionSecurityConfig
 from app.scanner.url_validator import parse_target_url
@@ -63,10 +65,15 @@ class WebScanner:
         api_security_config: ApiSecurityConfig | None = None,
         session_config: SessionSecurityConfig | None = None,
         config_security: ConfigSecurityConfig | None = None,
+        path_security: PathSecurityConfig | None = None,
     ) -> None:
         # Configuration and deployment analysis. Bounded GET/HEAD/OPTIONS
         # against fixed candidate lists; no enumeration of any kind.
         self._config_security = config_security or ConfigSecurityConfig()
+        # Path-traversal / LFI testing. Active but canary-based: it probes
+        # file-like parameters for escape to a controlled marker, never a real
+        # file. Its own budget, separate from the general active-scan budget.
+        self._path_security = path_security or PathSecurityConfig()
         # Session analysis. Correlates cookies, URLs, forms and token metadata
         # the earlier stages already captured; sends nothing.
         self._session_config = session_config or SessionSecurityConfig()
@@ -180,6 +187,16 @@ class WebScanner:
                     self._cancellation,
                     self._authentication,
                     self._authorization,
+                ),
+                # Active again, and last: it probes the file/path parameters the
+                # crawl and API discovery found for directory traversal, through
+                # the same fetcher, origin lock and credential scoping as every
+                # other stage. Its canary is harmless; it reads no real file.
+                PathSecurityModule(
+                    self._config,
+                    self._path_security,
+                    self._cancellation,
+                    self._authentication,
                 ),
             ]
         )

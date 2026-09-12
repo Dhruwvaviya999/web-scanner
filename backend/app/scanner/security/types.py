@@ -72,6 +72,10 @@ class FindingCategory(str, enum.Enum):
     #: Phase 16 emits these; it never grades the absence of an optional
     #: hardening measure as a weakness.
     CONFIGURATION = "CONFIGURATION"
+    #: Input-validation weaknesses where attacker-controlled data escapes its
+    #: intended boundary. Phase 17 emits path traversal and local file
+    #: inclusion, both confirmed against a controlled canary, never real files.
+    INPUT_VALIDATION = "INPUT_VALIDATION"
     INFORMATION_DISCLOSURE = "INFORMATION_DISCLOSURE"
     OTHER = "OTHER"
 
@@ -201,6 +205,15 @@ class FindingRule(str, enum.Enum):
     CONFIG_SOURCE_MAP_EXPOSURE = "CONFIG_SOURCE_MAP_EXPOSURE"
     #: A TLS handshake the client refused to complete.
     CONFIG_TLS_CONNECTION_FAILURE = "CONFIG_TLS_CONNECTION_FAILURE"
+
+    # --- Path traversal and local file inclusion (phase 17) ---
+    #: A file/path parameter escaped its intended directory and the application
+    #: returned a controlled canary from outside it, reproducibly. Confirmed
+    #: against a harmless marker file — never a real system file.
+    PATH_TRAVERSAL = "PATH_TRAVERSAL"
+    #: The application resolved or included a local file from user input, reached
+    #: outside the intended resource directory. Same controlled-canary proof.
+    LOCAL_FILE_INCLUSION = "LOCAL_FILE_INCLUSION"
 
     # --- Cookies ---
     COOKIE_SECURE_MISSING = "COOKIE_SECURE_MISSING"

@@ -28,6 +28,7 @@ from app.reporting.types import (
     ReportEndpointRef,
     ReportFinding,
     ReportConfigSecurity,
+    ReportPathSecurity,
     ReportMetadata,
     ReportSessionSecurity,
     ScanReport,
@@ -208,6 +209,7 @@ def _coverage(
         api_security=_api_security(scan),
         session_security=_session_security(scan),
         config_security=_config_security(scan),
+        path_security=_path_security(scan),
     )
 
 
@@ -282,6 +284,29 @@ def _config_security(scan: Scan) -> ReportConfigSecurity:
         requests_sent=scan.config_requests_sent or 0,
         findings_count=scan.config_findings or 0,
         budget_exhausted=bool(scan.config_budget_exhausted),
+    )
+
+
+def _path_security(scan: Scan) -> ReportPathSecurity:
+    """Path-security coverage from the stored counters.
+
+    `or 0` throughout, as elsewhere: a NULL counter means the stage never
+    reached that number. `analyzed` separates "tested nothing" from "was never
+    asked to test".
+    """
+    return ReportPathSecurity(
+        analyzed=bool(scan.path_analyzed),
+        parameters_considered=scan.path_parameters_considered or 0,
+        file_parameters=scan.path_file_parameters or 0,
+        parameters_tested=scan.path_parameters_tested or 0,
+        parameters_skipped=scan.path_parameters_skipped or 0,
+        endpoints_tested=scan.path_endpoints_tested or 0,
+        traversal_probes=scan.path_traversal_probes or 0,
+        canary_matches=scan.path_canary_matches or 0,
+        lfi_candidates=scan.path_lfi_candidates or 0,
+        requests_sent=scan.path_requests_sent or 0,
+        findings_count=scan.path_findings or 0,
+        budget_exhausted=bool(scan.path_budget_exhausted),
     )
 
 

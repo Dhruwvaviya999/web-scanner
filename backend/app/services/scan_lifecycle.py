@@ -35,6 +35,7 @@ class ScanStage(str, enum.Enum):
     API_SECURITY = "API_SECURITY"
     SESSION_SECURITY_ANALYSIS = "SESSION_SECURITY_ANALYSIS"
     CONFIGURATION_SECURITY = "CONFIGURATION_SECURITY"
+    PATH_SECURITY = "PATH_SECURITY"
     AGGREGATING = "AGGREGATING"
     FINALIZING = "FINALIZING"
     COMPLETED = "COMPLETED"
@@ -56,6 +57,7 @@ STAGE_PROGRESS: dict[ScanStage, int | None] = {
     ScanStage.API_SECURITY: 83,
     ScanStage.SESSION_SECURITY_ANALYSIS: 84,
     ScanStage.CONFIGURATION_SECURITY: 86,
+    ScanStage.PATH_SECURITY: 88,
     ScanStage.AGGREGATING: 85,
     ScanStage.FINALIZING: 95,
     ScanStage.COMPLETED: 100,
@@ -75,6 +77,7 @@ STAGE_MESSAGE: dict[ScanStage, str] = {
     ScanStage.API_SECURITY: "Reviewing API responses for exposure.",
     ScanStage.SESSION_SECURITY_ANALYSIS: "Reviewing session handling and CSRF posture.",
     ScanStage.CONFIGURATION_SECURITY: "Checking deployment and transport configuration.",
+    ScanStage.PATH_SECURITY: "Testing file and path parameters for traversal.",
     ScanStage.AGGREGATING: "Grouping findings.",
     ScanStage.FINALIZING: "Saving results.",
     ScanStage.COMPLETED: "Scan complete.",

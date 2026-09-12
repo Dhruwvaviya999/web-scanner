@@ -10,6 +10,7 @@ export const FINDING_CATEGORIES = [
   "API_SECURITY",
   "SESSION_SECURITY",
   "CONFIGURATION",
+  "INPUT_VALIDATION",
   "INFORMATION_DISCLOSURE",
   "OTHER",
 ] as const;
@@ -87,6 +88,7 @@ export const CATEGORY_LABELS: Record<FindingCategory, string> = {
   API_SECURITY: "API security",
   SESSION_SECURITY: "Session security",
   CONFIGURATION: "Configuration",
+  INPUT_VALIDATION: "Path traversal / LFI",
   INFORMATION_DISCLOSURE: "Information disclosure",
   OTHER: "Other",
 };
@@ -107,4 +109,5 @@ export const ACTIVE_CATEGORIES: ReadonlySet<FindingCategory> = new Set<FindingCa
   "SQLI",
   "AUTHORIZATION",
   "API_SECURITY",
+  "INPUT_VALIDATION",
 ]);

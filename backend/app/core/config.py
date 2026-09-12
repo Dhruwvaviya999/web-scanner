@@ -194,6 +194,24 @@ class Settings(BaseSettings):
     #: nothing, and grading it would be wrong more often than right.
     CONFIG_SECURITY_REQUIRE_HTTPS: bool = False
 
+    # --- Path traversal and local file inclusion (phase 17) ---
+    # Active, but bounded and canary-based: probes aim at a controlled marker
+    # file, never a real system file. The variant set is fixed and small; these
+    # numbers cap how many parameters and endpoints it touches, not a wordlist.
+    PATH_SECURITY_ENABLED: bool = True
+    PATH_SECURITY_MAX_PARAMETERS_PER_ENDPOINT: int = Field(default=3, gt=0, le=20)
+    #: Traversal variants per parameter. The built-in set is 8; this only caps
+    #: it lower, and can never enlarge it.
+    PATH_SECURITY_MAX_VARIANTS_PER_PARAMETER: int = Field(default=8, gt=0, le=8)
+    PATH_SECURITY_MAX_TARGETS: int = Field(default=25, gt=0, le=200)
+    #: Hard scan-wide probe ceiling for this stage, separate from the general
+    #: active-scan budget. Fails closed.
+    PATH_SECURITY_MAX_PROBES_PER_SCAN: int = Field(default=200, gt=0, le=2000)
+    PATH_SECURITY_PER_PARAMETER_BUDGET: int = Field(default=12, gt=0, le=64)
+    PATH_SECURITY_PER_ENDPOINT_BUDGET: int = Field(default=48, gt=0, le=512)
+    #: Bytes of a probe response scanned for the canary before it is discarded.
+    PATH_SECURITY_MAX_RESPONSE_BYTES: int = Field(default=32768, ge=256, le=262144)
+
     @field_validator("JWT_SECRET_KEY")
     @classmethod
     def _reject_placeholder_secret(cls, value: str) -> str:

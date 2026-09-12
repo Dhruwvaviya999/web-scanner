@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         AuthorizationOutcome,
     )
     from app.scanner.config_security.types import ConfigSecurityResult
+    from app.scanner.path_security.types import PathSecurityResult
     from app.scanner.session_security.types import SessionSecurityResult
 
 
@@ -152,6 +153,11 @@ class ScanReport:
     #: counts, categories and verdicts only — never a file's contents, a
     #: secret, a source line or a repository object. None until the stage runs.
     config_security: "ConfigSecurityResult | None" = None
+    #: What path-security testing found: which parameters look file-like, which
+    #: were probed, and whether a controlled traversal canary was retrieved.
+    #: Counts, verdicts and parameter names only — never a file's contents, a
+    #: probe value or a credential. None until the stage has run.
+    path_security: "PathSecurityResult | None" = None
     #: Per-identity authorization observations, in memory for the length of the
     #: scan. They carry field *names* so the API security stage can ask the
     #: property-level question without repeating a request; nothing here is

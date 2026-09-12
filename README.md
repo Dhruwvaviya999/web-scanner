@@ -299,7 +299,7 @@ Always change the schema through a migration; never edit the database by hand.
 
 ```bash
 cd backend
-.venv\Scripts\python -m pytest          # 988 tests
+.venv\Scripts\python -m pytest          # 1049 tests
 ```
 
 | Suite | Covers |
@@ -329,6 +329,7 @@ cd backend
 | `test_api_security.py` | Field classification and its false-positive controls, property comparison, verbose errors, CORS, inventory, leakage |
 | `test_session_security.py` | Session cookie classification and its exclusions, identifiers in URLs, the CSRF verdict scale and what it refuses to claim, JWT metadata, timeout honesty, leakage |
 | `test_config_security.py` | Transport and HSTS boundaries against Phase 3, method advertisement, bounded candidate lists and the absence of enumeration, catch-all guards, debug/listing/source-map detection, CSP grading, budget honesty, leakage |
+| `test_path_security.py` | Conservative file-parameter classification, bounded/deterministic canary payloads with no system-file targets, the traversal verdict scale, reflection/404/status-change rejection, authenticated traversal, budget and cancellation, canary/payload leakage |
 
 The detector and crawler suites need no network: the crawler's page fetcher is injected, so
 limits, cycles and failure handling are deterministic. The API suites drive the real app through
@@ -2568,6 +2569,149 @@ exploit generation. No TLS scanning beyond whether the handshake verified.
   collected responses are found; a bypass that needs a crafted encoding to
   surface will not be.
 
+## Path traversal and local file inclusion (Phase 17)
+
+Phase 17 asks whether a parameter that names a file or a path can be pushed to
+name a *different* file, outside the boundary the application intended — directory
+traversal, and where the mechanism is the application resolving a local file from
+that input, local file inclusion.
+
+It is an active detector on the Phase 7 probe framework, and it is built around a
+single safety idea: **it proves the class of bug against a controlled canary, not
+against a real file.**
+
+### The scanner never reads a real system file
+
+There is no `/etc/passwd` probe, no Windows SAM, no SSH key, no cloud-metadata
+path, no environment file — and no code path that could construct one. Every
+probe is a fixed traversal prefix joined to one constant suffix that points at a
+harmless marker the local fixture places outside the intended directory:
+
+```
+scanner-canary/traversal-marker.txt   →   PATH_TRAVERSAL_CANARY_2026
+```
+
+A finding requires that *marker string* to come back. Because the marker is file
+*content* and not the input, reflection of the payload can never produce it — so
+the proof of a vulnerability is inherently "a file was retrieved", never "the
+input was echoed". The worst the detector can retrieve is a file that exists only
+to be retrieved. A test renders the whole payload set and asserts no real
+sensitive-file token appears anywhere in it.
+
+### Parameters are classified before anything is probed
+
+Probing every parameter would be noisy and a reliable source of false positives,
+so a pure classifier grades each one first, from its name and what surrounds it:
+
+| Class | Examples | Probed? |
+| ----- | -------- | ------- |
+| `LIKELY_FILE_PARAMETER` | `file`, `filepath`, `path`, `template`, `include`, `document` | yes |
+| `POSSIBLE_FILE_PARAMETER` | `page`, `src`, `image`, `view` | yes, graded lower |
+| `NOT_FILE_PARAMETER` | `id`, `q`, `search`, `page_size`, `token` | never |
+| `UNKNOWN` | anything else | never |
+
+An exclusion list runs first, so `id` on a `/download` endpoint that returned a
+PDF is *still* not a file parameter — context can lift a borderline name, never
+override an exclusion. `id`, `q` and `user_id` are never probed.
+
+### Bounded, deterministic payloads
+
+Eight variants at most, four conceptual classes at a couple of climb depths:
+plain `../`, URL-encoded, doubly-encoded, and a normalized/mixed `....//` form,
+plus a backslash separator variant. It is not a bypass engine and not a
+WAF-evasion wordlist; a real assessment against a hardened target is a human's
+job, and this is a safe confirmation against a cooperative fixture.
+
+### Baseline, probe, reproduce
+
+For each file-like parameter (at most three per endpoint):
+
+1. **Baseline** with an ordinary value. If it is not a healthy 2xx/3xx, the
+   parameter is skipped — a broken endpoint cannot anchor a differential.
+2. **Probe** the bounded traversal set, stopping at the first that returns the
+   marker.
+3. **Reproduce** that one probe. A one-off is not a finding.
+4. **Analyze**, purely. The verdict scale is `NONE` / `POSSIBLE` / `STRONG` /
+   `UNKNOWN`, and only `STRONG` — a reproduced canary retrieval — becomes a
+   finding.
+
+The false-positive guards are explicit and tested: reflection of the payload is
+`NONE`, a generic 404 is `NONE`, a status change alone is `NONE`, a body-size
+change with an unchanged media type is `NONE`, and a baseline that *already*
+contained the marker is `UNKNOWN` (nothing can be attributed to a probe).
+
+### Path traversal versus LFI
+
+The mechanism is chosen from evidence, not assumed. A `file`/`download`/`path`
+parameter that escapes its directory is reported as `PATH_TRAVERSAL`; a
+`template`/`include`/`view`-style parameter that resolves a local file is
+`LOCAL_FILE_INCLUSION`. The proof — a reproduced canary — is identical; only the
+label and remediation differ.
+
+### Authentication and authorization
+
+Testing runs through the existing `AuthenticationContext`, so a file parameter on
+an authenticated endpoint is probed as the configured identity — one fetcher for
+baseline and probes, so an authenticated baseline is never compared against an
+unauthenticated probe. The finding records the identity *label* (the auth mode),
+never the credential. A private endpoint that 401s anonymously is skipped
+(unusable baseline) and only confirmed when a credential is supplied.
+
+Where a Phase 12 authorization policy exists it can enrich the evidence; without
+one, no ownership expectation is invented.
+
+### Rules, category and severity
+
+Two rules, category `INPUT_VALIDATION`, both through the shared aggregation:
+
+| Rule | Severity | Confidence |
+| ---- | -------- | ---------- |
+| `PATH_TRAVERSAL` | HIGH | HIGH |
+| `LOCAL_FILE_INCLUSION` | HIGH | HIGH |
+
+Neither is CRITICAL: this is a controlled canary, not demonstrated extraction of
+real data. The subject is `parameter:<name>`, so the same parameter on several
+endpoints aggregates into one finding with an occurrence each.
+
+### Budgets and cancellation
+
+Its own probe budget, separate from the general active-scan budget: at most 3
+parameters per endpoint, 8 variants per parameter, and 200 probes per scan, all
+failing closed. Cancellation is honored before every probe through the engine, so
+no request is sent once a scan is stopped, and a single parameter's failure never
+fails the scan.
+
+### What never reaches a finding, a report or the database
+
+Parameter names, verdicts, status codes and media types — nothing else. **Never**
+a file's contents, the canary's bytes, a probe value, a response body, a
+credential or a cookie. The detector reduces each response to a marker boolean
+while the body is in hand and discards it; every Phase 17 database column is an
+integer or a boolean. Tests assert the marker, the payloads and the canary body
+appear in no finding, no report and no API response.
+
+### What Phase 17 does not do
+
+No remote file inclusion. No OS command injection. No arbitrary file extraction.
+No reading of real system files, credentials, SSH keys, cloud metadata,
+environment secrets or user home directories. No file writes, no deletion, no
+command execution. No broad traversal or WAF-bypass fuzzing. No blind or
+time-based SQLi. Every probe is a GET; no state-changing method is ever sent.
+
+### Limitations
+
+* **Bounded payloads miss hardened targets.** Eight deterministic variants
+  confirm a straightforward escape; a filter that survives all eight is not a
+  clean result, and a thorough manual test is still the right tool there.
+* **A fixed baseline value won't fit every endpoint.** The detector probes with
+  an ordinary filename; an endpoint that demands a very specific value may return
+  an unusable baseline and be skipped rather than tested.
+* **Only GET query parameters are tested.** POST bodies, path segments, headers
+  and cookies are out of scope for this phase by design.
+* **Canary-based, not exhaustive.** The detector proves reachability of a
+  controlled marker outside the boundary; it does not enumerate which real files
+  a confirmed traversal could reach, because it never tries to read them.
+
 ---
 
 ## API overview
@@ -2678,6 +2822,11 @@ the server and mirrored by Zod in the browser; the server is authoritative.
 
 ## Current limitations
 
+* **Path-traversal testing is canary-based and bounded.** It confirms a file/path parameter can
+  escape its intended directory to reach a controlled harmless marker, using at most eight
+  deterministic payloads. It reads no real system file, targets no `/etc/passwd` or equivalent,
+  performs no remote file inclusion, no file writes and no command execution, and a target that
+  survives all eight variants is not thereby proven safe. Only GET query parameters are tested.
 * **A limited, specific set of checks.** A scan fetches the target, crawls the same origin,
   assesses security headers and cookies, and runs conservative reflected-XSS and SQL-injection
   checks against discovered GET query parameters. That is the whole of the active testing: no TLS
@@ -2858,10 +3007,11 @@ Planned, in order. Everything from Phase 3 onward is unimplemented.
 | 13 | API discovery: classification, OpenAPI/Swagger, GraphQL presence | done |
 | 14 | API security baseline: sensitive data, verbose errors, CORS, inventory | done |
 | 15 | Session security and conservative CSRF analysis | done |
-| 16 | Configuration, deployment and transport security | **done - current release** |
-| 17 | Deeper TLS inspection and risk scoring | planned |
-| 18 | Further active testing: open redirect, CSRF verification | planned |
-| 19 | Additional export formats (PDF, SARIF), background execution | planned |
+| 16 | Configuration, deployment and transport security | done |
+| 17 | Path traversal and local file inclusion | **done - current release** |
+| 18 | Deeper TLS inspection and risk scoring | planned |
+| 19 | Further active testing: open redirect, CSRF verification | planned |
+| 20 | Additional export formats (PDF, SARIF), background execution | planned |
 
 The attack surface discovered in Phase 4 is what later detectors consume: endpoints and
 their parameters are the injection points an XSS or SQL-injection check needs, and the forms it

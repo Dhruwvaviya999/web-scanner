@@ -198,6 +198,33 @@ export interface ReportConfigSecurity {
   coverage_complete: boolean;
 }
 
+/**
+ * Path-traversal / LFI coverage. Every field is a boolean or a count — there is
+ * no field for a file's contents, the canary bytes, a probe value or a response
+ * body, because none of those ever reach the API.
+ *
+ * `canary_matches` is the load-bearing number: a match means a controlled
+ * marker was returned from outside the intended directory, the only evidence
+ * treated as a finding. `parameters_skipped` and `coverage_complete` say when a
+ * budget or an unusable baseline left file-like parameters untested, so silence
+ * is not mistaken for safety.
+ */
+export interface ReportPathSecurity {
+  analyzed: boolean;
+  parameters_considered: number;
+  file_parameters: number;
+  parameters_tested: number;
+  parameters_skipped: number;
+  endpoints_tested: number;
+  traversal_probes: number;
+  canary_matches: number;
+  lfi_candidates: number;
+  requests_sent: number;
+  findings_count: number;
+  budget_exhausted: boolean;
+  coverage_complete: boolean;
+}
+
 export interface ReportMetadata {
   scan_id: string;
   target_url: string;
@@ -249,6 +276,9 @@ export interface CoverageSummary {
   session_security: ReportSessionSecurity;
   /** Deployment and transport configuration. Bounded, and never a brute-force. */
   config_security: ReportConfigSecurity;
+  /** File/path parameter testing: what was probed, and whether a controlled
+   *  traversal canary was retrieved. Active and canary-based. */
+  path_security: ReportPathSecurity;
   /**
    * True only when every discovered endpoint was analysed or deliberately
    * skipped, with no failures. A clean result with this false means the scan
