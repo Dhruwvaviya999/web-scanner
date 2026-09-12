@@ -1,0 +1,917 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scanner Field Guide</title>
+<meta name="description" content="Step-by-step guide to running, reading and extending the web vulnerability scanner.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+  /* ---- tokens: complete light palette on bare :root ------------------ */
+  :root {
+    color-scheme: light dark;
+
+    --paper:      #f6f8f9;
+    --surface:    #ffffff;
+    --surface-2:  #eef3f4;
+    --ink:        #14212a;
+    --ink-soft:   #43585f;
+    --ink-faint:  #6b8087;
+    --rule:       #d3dfe2;
+    --rule-soft:  #e4ecee;
+    --accent:     #0b5563;
+    --accent-ink: #ffffff;
+    --accent-wash:#e2eff1;
+
+    --sev-high:   #a8342c;
+    --sev-med:    #8f6210;
+    --sev-low:    #47646f;
+    --sev-info:   #6f8189;
+    --sev-ok:     #2f6b4f;
+
+    --code-bg:    #0f1c22;
+    --code-ink:   #d8e6ea;
+    --code-dim:   #7e969e;
+    --code-accent:#7fd4e3;
+
+    --shadow: 0 1px 2px rgba(20,33,42,.05), 0 8px 24px -16px rgba(20,33,42,.25);
+
+    --step:  clamp(1rem, .93rem + .3vw, 1.0625rem);
+    --measure: 68ch;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0d1418;
+      --surface:    #121d23;
+      --surface-2:  #17242b;
+      --ink:        #dfeaed;
+      --ink-soft:   #a3b6bc;
+      --ink-faint:  #7b9099;
+      --rule:       #24363e;
+      --rule-soft:  #1b2a31;
+      --accent:     #4fc3d7;
+      --accent-ink: #06222a;
+      --accent-wash:#15303a;
+
+      --sev-high:   #e2867c;
+      --sev-med:    #d6a851;
+      --sev-low:    #8fb0bc;
+      --sev-info:   #8ba0a8;
+      --sev-ok:     #6bb894;
+
+      --code-bg:    #081116;
+      --code-ink:   #cfe0e5;
+      --code-dim:   #6d858d;
+      --code-accent:#7fd4e3;
+
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #0d1418;
+    --surface:    #121d23;
+    --surface-2:  #17242b;
+    --ink:        #dfeaed;
+    --ink-soft:   #a3b6bc;
+    --ink-faint:  #7b9099;
+    --rule:       #24363e;
+    --rule-soft:  #1b2a31;
+    --accent:     #4fc3d7;
+    --accent-ink: #06222a;
+    --accent-wash:#15303a;
+
+    --sev-high:   #e2867c;
+    --sev-med:    #d6a851;
+    --sev-low:    #8fb0bc;
+    --sev-info:   #8ba0a8;
+    --sev-ok:     #6bb894;
+
+    --code-bg:    #081116;
+    --code-ink:   #cfe0e5;
+    --code-dim:   #6d858d;
+    --code-accent:#7fd4e3;
+
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+  }
+
+  /* ---- base ---------------------------------------------------------- */
+  * { box-sizing: border-box; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-size: var(--step);
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 78ch;
+    margin-inline: auto;
+    padding-inline: 20px;
+    padding-block: 56px 96px;
+  }
+
+  h1, h2, h3 {
+    font-family: Archivo, ui-sans-serif, system-ui, sans-serif;
+    text-wrap: balance;
+    line-height: 1.18;
+    margin: 0;
+  }
+  h1 { font-size: clamp(2rem, 1.6rem + 1.9vw, 2.9rem); font-weight: 700; letter-spacing: -.022em; }
+  h2 { font-size: clamp(1.35rem, 1.2rem + .7vw, 1.65rem); font-weight: 650; letter-spacing: -.014em; }
+  h3 { font-size: 1.06rem; font-weight: 600; letter-spacing: -.006em; }
+
+  p { margin: 0; max-width: var(--measure); }
+  a { color: var(--accent); text-underline-offset: 3px; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 3px;
+  }
+
+  code, kbd, pre { font-family: "IBM Plex Mono", ui-monospace, "Cascadia Code", monospace; }
+
+  code:not(pre code) {
+    background: var(--surface-2);
+    border: 1px solid var(--rule-soft);
+    padding: .08em .36em;
+    border-radius: 4px;
+    font-size: .855em;
+    word-break: break-word;
+  }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .715rem;
+    font-weight: 500;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  /* ---- masthead ------------------------------------------------------ */
+  .masthead { display: flex; flex-direction: column; gap: 14px; }
+  .masthead p.lede {
+    font-size: 1.12rem;
+    color: var(--ink-soft);
+    max-width: 60ch;
+  }
+  .facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 10px;
+    margin-top: 6px;
+  }
+  .fact {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .74rem;
+    letter-spacing: .02em;
+    color: var(--ink-soft);
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 999px;
+    padding: 4px 11px;
+  }
+  .fact b { color: var(--ink); font-weight: 600; }
+
+  /* ---- sections ------------------------------------------------------ */
+  section { margin-top: 60px; }
+  .sec-head {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    padding-bottom: 14px;
+    border-bottom: 2px solid var(--ink);
+    margin-bottom: 26px;
+  }
+  .flow { display: flex; flex-direction: column; gap: 18px; }
+
+  /* ---- callouts ------------------------------------------------------ */
+  .note {
+    display: grid;
+    grid-template-columns: 3px 1fr;
+    gap: 0 16px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .note > .bar { background: var(--accent); }
+  .note > .body { padding: 15px 18px 16px; display: flex; flex-direction: column; gap: 7px; }
+  .note.warn > .bar { background: var(--sev-high); }
+  .note .t { font-family: Archivo, sans-serif; font-weight: 650; font-size: .95rem; }
+  .note p { font-size: .93rem; color: var(--ink-soft); }
+
+  /* ---- numbered steps (a real sequence) ------------------------------ */
+  ol.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 26px; counter-reset: s; }
+  ol.steps > li {
+    counter-increment: s;
+    display: grid;
+    grid-template-columns: 34px 1fr;
+    gap: 0 16px;
+    align-items: start;
+  }
+  ol.steps > li::before {
+    content: counter(s);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .82rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-wash);
+    border-radius: 6px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    margin-top: 1px;
+  }
+  ol.steps .step-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  ol.steps h3 { margin-bottom: -1px; }
+  ol.steps p { font-size: .95rem; color: var(--ink-soft); }
+
+  /* ---- code blocks --------------------------------------------------- */
+  pre {
+    margin: 0;
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border-radius: 7px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-size: .83rem;
+    line-height: 1.72;
+    border: 1px solid transparent;
+  }
+  pre .c { color: var(--code-dim); }
+  pre .k { color: var(--code-accent); }
+  pre b { color: #fff; font-weight: 600; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) pre { border-color: var(--rule); }
+  }
+  :root[data-theme="dark"] pre { border-color: var(--rule); }
+
+  /* ---- pipeline ------------------------------------------------------ */
+  ol.pipeline { list-style: none; margin: 0; padding: 0; counter-reset: p; display: flex; flex-direction: column; }
+  ol.pipeline > li {
+    counter-increment: p;
+    display: grid;
+    grid-template-columns: 30px 1fr;
+    gap: 0 14px;
+    padding: 11px 0;
+    border-bottom: 1px solid var(--rule-soft);
+    align-items: baseline;
+  }
+  ol.pipeline > li:last-child { border-bottom: 0; }
+  ol.pipeline > li::before {
+    content: counter(p, decimal-leading-zero);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .74rem;
+    color: var(--ink-faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .pl-name { font-family: "IBM Plex Mono", monospace; font-size: .845rem; font-weight: 500; color: var(--ink); }
+  .pl-desc { font-size: .9rem; color: var(--ink-soft); display: block; margin-top: 1px; }
+  .pl-tag {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .66rem;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 4px;
+    margin-left: 8px;
+    vertical-align: 1px;
+    white-space: nowrap;
+  }
+  .pl-tag.passive { background: var(--surface-2); color: var(--ink-faint); border: 1px solid var(--rule); }
+  .pl-tag.active  { background: var(--accent-wash); color: var(--accent); border: 1px solid transparent; }
+
+  /* ---- module map ---------------------------------------------------- */
+  .map { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; }
+  .map > div {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+  .map .path { font-family: "IBM Plex Mono", monospace; font-size: .78rem; color: var(--accent); word-break: break-word; }
+  .map .what { font-size: .87rem; color: var(--ink-soft); }
+
+  /* ---- severity ladder ----------------------------------------------- */
+  .sev-list { display: flex; flex-direction: column; gap: 0; }
+  .sev-row {
+    display: grid;
+    grid-template-columns: 90px 1fr;
+    gap: 14px;
+    align-items: baseline;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  .sev-row:last-child { border-bottom: 0; }
+  .sev-pill {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .69rem;
+    font-weight: 600;
+    letter-spacing: .07em;
+    padding: 3px 0 3px 10px;
+    border-left: 3px solid currentColor;
+    display: block;
+  }
+  .sev-row p { font-size: .9rem; color: var(--ink-soft); }
+
+  /* ---- tables -------------------------------------------------------- */
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: .875rem; }
+  th, td { text-align: left; padding: 9px 14px 9px 0; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+  th {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .69rem;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 500;
+    border-bottom-color: var(--rule);
+  }
+  td:first-child { font-family: "IBM Plex Mono", monospace; font-size: .8rem; white-space: nowrap; padding-right: 22px; }
+  td.desc { color: var(--ink-soft); }
+
+  /* ---- principles ---------------------------------------------------- */
+  .principles { display: flex; flex-direction: column; gap: 14px; }
+  .principle { display: grid; grid-template-columns: auto 1fr; gap: 0 14px; align-items: baseline; }
+  .principle .mark { color: var(--accent); font-family: "IBM Plex Mono", monospace; font-size: .8rem; }
+  .principle .p-t { font-weight: 600; }
+  .principle p { font-size: .93rem; color: var(--ink-soft); margin-top: 2px; }
+
+  details {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 12px 16px;
+  }
+  summary { cursor: pointer; font-weight: 600; font-size: .95rem; }
+  details > *:not(summary) { margin-top: 12px; }
+
+  footer {
+    margin-top: 72px;
+    padding-top: 22px;
+    border-top: 1px solid var(--rule);
+    font-size: .85rem;
+    color: var(--ink-faint);
+    max-width: var(--measure);
+  }
+
+  @media (max-width: 560px) {
+    .map { grid-template-columns: 1fr; }
+    .sev-row { grid-template-columns: 1fr; gap: 2px; }
+    ol.steps > li { grid-template-columns: 28px 1fr; gap: 0 12px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <span class="eyebrow">Web Vulnerability Scanner · Operator manual</span>
+    <h1>Scanner Field Guide</h1>
+    <p class="lede">
+      How to run the scanner, read what it tells you, and add checks of your own
+      without breaking the rules the rest of the codebase follows.
+    </p>
+    <div class="facts">
+      <span class="fact"><b>17</b> phases</span>
+      <span class="fact"><b>11</b> pipeline stages</span>
+      <span class="fact"><b>1,049</b> tests</span>
+      <span class="fact">FastAPI + <b>Postgres</b></span>
+      <span class="fact">Next.js + <b>pnpm</b></span>
+    </div>
+  </header>
+
+  <!-- ================= PART 1 ================= -->
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">Part 1</span>
+      <h2>Get it running</h2>
+    </div>
+
+    <div class="flow">
+      <p>Three things run at once: the database, the backend API, and the web UI.
+      Start them in that order. You only do steps 1&ndash;4 once.</p>
+
+      <ol class="steps">
+        <li>
+          <div class="step-body">
+            <h3>Start PostgreSQL</h3>
+            <p>It should already be running as a system service on port 5432. If the
+            backend later says it cannot connect, this is the first thing to check.</p>
+          </div>
+        </li>
+
+        <li>
+          <div class="step-body">
+            <h3>Set up the backend once</h3>
+            <pre><span class="c"># from the project root</span>
+cd backend
+
+<span class="c"># 1. make a virtual environment (Python 3.12+)</span>
+python -m venv .venv
+.venv\Scripts\activate          <span class="c"># Windows</span>
+<span class="c"># source .venv/bin/activate     # macOS / Linux</span>
+
+<span class="c"># 2. install dependencies</span>
+pip install -r requirements.txt
+
+<span class="c"># 3. configuration</span>
+copy .env.example .env          <span class="c"># then edit it</span></pre>
+            <p>Open <code>.env</code> and set two values: <code>DATABASE_URL</code>
+            (your Postgres connection string) and <code>JWT_SECRET_KEY</code>. Generate
+            the key rather than inventing one:</p>
+            <pre>python -c <b>"import secrets; print(secrets.token_urlsafe(64))"</b></pre>
+          </div>
+        </li>
+
+        <li>
+          <div class="step-body">
+            <h3>Create the database tables</h3>
+            <pre>alembic upgrade head</pre>
+            <p>This runs every migration in order, up to <code>0015_path_security</code>.
+            Never change the schema by editing the database directly &mdash; always write a
+            migration.</p>
+          </div>
+        </li>
+
+        <li>
+          <div class="step-body">
+            <h3>Start the backend</h3>
+            <pre>uvicorn app.main:app --reload --port 8000</pre>
+            <p>Now visit <strong>localhost:8000/docs</strong>. That is the interactive
+            API explorer, and it is the fastest way to poke at anything. Health check
+            lives at <code>/api/health</code>.</p>
+          </div>
+        </li>
+
+        <li>
+          <div class="step-body">
+            <h3>Start the frontend</h3>
+            <pre><span class="c"># in a second terminal, from the project root</span>
+cd frontend
+pnpm install
+copy .env.example .env.local
+pnpm dev</pre>
+            <p>Open <strong>localhost:3000</strong>, register an account, and you are in.</p>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ================= PART 2 ================= -->
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">Part 2</span>
+      <h2>Run your first scan</h2>
+    </div>
+
+    <div class="flow">
+      <div class="note warn">
+        <div class="bar"></div>
+        <div class="body">
+          <span class="t">Only scan what you own</span>
+          <p>This tool sends real requests, and some of them are active probes. Point it
+          only at a system you own or have written permission to test. Unauthorised
+          scanning is illegal in most countries. When you are experimenting, use the
+          local fixtures described below.</p>
+        </div>
+      </div>
+
+      <h3>The safe way to practise</h3>
+      <p>The test suite already builds small deliberately-vulnerable apps that run on
+      localhost and disappear when the test ends. Watching one of those run is the best
+      possible introduction:</p>
+      <pre><span class="c"># see the path-traversal detector find a planted bug</span>
+.venv\Scripts\python -m pytest tests/test_path_security.py <span class="k">-v</span>
+
+<span class="c"># or the whole suite (about two minutes)</span>
+.venv\Scripts\python -m pytest</pre>
+
+      <h3>Scanning from the UI</h3>
+      <p>On the dashboard, paste a URL and start a scan. The scan runs inline, so the
+      request stays open until it finishes. When it is done you get three views:
+      <strong>Findings</strong> (what is wrong), <strong>Attack surface</strong> (what
+      was discovered), and <strong>Report</strong> (the full picture, with coverage).</p>
+
+      <h3>Scanning from the API</h3>
+      <p>Everything the UI does is a plain HTTP call. Log in first &mdash; the session is a
+      cookie &mdash; then create a scan:</p>
+      <pre>POST /api/scans
+<b>{ "target_url": "https://your-own-site.example" }</b></pre>
+      <p>Useful reads afterwards, where <code>{id}</code> is the scan id:</p>
+
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr><th>Endpoint</th><th>Gives you</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>GET /api/scans/{id}</td><td class="desc">Status, timing, and the summary counters</td></tr>
+            <tr><td>GET /api/scans/{id}/findings</td><td class="desc">Every finding, grouped by rule</td></tr>
+            <tr><td>GET /api/scans/{id}/endpoints</td><td class="desc">URLs and parameters the crawler found</td></tr>
+            <tr><td>GET /api/scans/{id}/api-endpoints</td><td class="desc">The API surface, from Phase 13</td></tr>
+            <tr><td>GET /api/scans/{id}/forms</td><td class="desc">Forms found (never submitted)</td></tr>
+            <tr><td>GET /api/scans/{id}/report</td><td class="desc">The canonical report, including coverage</td></tr>
+            <tr><td>GET /api/scans/{id}/report/json</td><td class="desc">The same report as a download</td></tr>
+            <tr><td>POST /api/scans/{id}/cancel</td><td class="desc">Ask a running scan to stop</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= PART 3 ================= -->
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">Part 3</span>
+      <h2>What happens during a scan</h2>
+    </div>
+
+    <div class="flow">
+      <p>One scan runs eleven stages in a fixed order. Each stage adds to a single
+      shared <code>ScanReport</code>, and later stages read what earlier ones found.
+      That is why the order matters.</p>
+
+      <ol class="pipeline">
+        <li><div>
+          <span class="pl-name">auth_check</span><span class="pl-tag passive">no traffic unless configured</span>
+          <span class="pl-desc">Confirms your credentials work before a crawl is spent on them.</span>
+        </div></li>
+        <li><div>
+          <span class="pl-name">http_probe</span><span class="pl-tag active">sends</span>
+          <span class="pl-desc">One request to the target. Records status, headers, cookies, redirects.</span>
+        </div></li>
+        <li><div>
+          <span class="pl-name">crawler</span><span class="pl-tag active">sends</span>
+          <span class="pl-desc">Walks the same origin, bounded by pages, depth and a time budget. Finds URLs, parameter names and forms.</span>
+        </div></li>
+        <li><div>
+          <span class="pl-name">endpoint_analysis</span><span class="pl-tag passive">reads</span>
+          <span class="pl-desc">Runs the header and cookie rules over everything the crawl captured.</span>
+        </div></li>
+        <li><div>
+          <span class="pl-name">api_discovery</span><span class="pl-tag active">sends</span>
+          <span class="pl-desc">Classifies which endpoints behave like APIs; fetches OpenAPI docs if published.</span>
+        </div></li>
+        <li><div>
+          <span class="pl-name">active_scan</span><span class="pl-tag active">probes</span>
+          <span class="pl-desc">Runs the registered detectors &mdash; reflected XSS and SQL injection &mdash; against discovered parameters.</span>
+        </div></li>
+        <li><div>
+          <span class="pl-name">authorization</span><span class="pl-tag active">sends</span>
+          <span class="pl-desc">Compares what different identities can reach, against a policy you supply.</span>
+        </div></li>
+        <li><div>
+          <span class="pl-name">api_security</span><span class="pl-tag passive">reads</span>
+          <span class="pl-desc">Sensitive field names, verbose errors, unsafe CORS &mdash; all from responses already fetched.</span>
+        </div></li>
+        <li><div>
+          <span class="pl-name">session_security</span><span class="pl-tag passive">reads</span>
+          <span class="pl-desc">Session cookies, tokens in URLs, JWT metadata, CSRF posture. Sends nothing.</span>
+        </div></li>
+        <li><div>
+          <span class="pl-name">config_security</span><span class="pl-tag active">sends</span>
+          <span class="pl-desc">Transport and HSTS, plus a small fixed list of deployment paths. No brute-forcing.</span>
+        </div></li>
+        <li><div>
+          <span class="pl-name">path_security</span><span class="pl-tag active">probes</span>
+          <span class="pl-desc">Tests file/path parameters for directory traversal, using a harmless canary.</span>
+        </div></li>
+      </ol>
+
+      <div class="note">
+        <div class="bar"></div>
+        <div class="body">
+          <span class="t">Findings all go to one place</span>
+          <p>No stage keeps its own list. Every stage hands findings to the shared
+          aggregator, which deduplicates them by <em>rule + subject</em> and attaches an
+          occurrence per affected endpoint. That is why the same problem on ten pages is
+          one finding with ten occurrences, not ten findings.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= PART 4 ================= -->
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">Part 4</span>
+      <h2>Where the code lives</h2>
+    </div>
+
+    <div class="flow">
+      <p>The scanner is deliberately isolated. Nothing under
+      <code>app/scanner/</code> imports the database, the routers or the models &mdash; it
+      speaks in plain dataclasses, and <code>scan_service.py</code> is the only
+      translator. Keep it that way and everything stays testable without a database.</p>
+
+      <div class="map">
+        <div><span class="path">scanner/crawler/</span><span class="what">Bounded crawl, URL rules, HTML parsing</span></div>
+        <div><span class="path">scanner/security/</span><span class="what">Header and cookie rules; the finding vocabulary</span></div>
+        <div><span class="path">scanner/active/</span><span class="what">Probe engine, budget, comparison helpers</span></div>
+        <div><span class="path">scanner/vulnerabilities/</span><span class="what">XSS and SQLi detectors</span></div>
+        <div><span class="path">scanner/api/ · api_security/</span><span class="what">API discovery, then API weaknesses</span></div>
+        <div><span class="path">scanner/session_security/</span><span class="what">Cookies, JWTs, CSRF verdicts</span></div>
+        <div><span class="path">scanner/config_security/</span><span class="what">Transport, deployment files, CSP quality</span></div>
+        <div><span class="path">scanner/path_security/</span><span class="what">Traversal and file inclusion</span></div>
+        <div><span class="path">scanner/auth/ · authorization/</span><span class="what">Target credentials and access policy</span></div>
+        <div><span class="path">scanner/analysis/</span><span class="what">The aggregator that deduplicates findings</span></div>
+        <div><span class="path">app/reporting/</span><span class="what">Rows → the canonical report</span></div>
+        <div><span class="path">app/core/config.py</span><span class="what">Every setting and budget</span></div>
+      </div>
+
+      <h3 style="margin-top:12px">Every phase has the same four parts</h3>
+      <p>Once you have read one module you have read them all. Open
+      <code>scanner/session_security/</code> and you will find exactly this shape:</p>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>File</th><th>Job</th></tr></thead>
+          <tbody>
+            <tr><td>types.py</td><td class="desc">Enums and dataclasses. No logic, no I/O.</td></tr>
+            <tr><td>*_analyzer.py</td><td class="desc">Pure functions. Data in, verdict out. Easy to test.</td></tr>
+            <tr><td>findings.py</td><td class="desc">Verdict → a <code>FindingData</code>, with safe evidence.</td></tr>
+            <tr><td>module.py</td><td class="desc">The only file allowed to touch the network.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= PART 5 ================= -->
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">Part 5</span>
+      <h2>Add your own check</h2>
+    </div>
+
+    <div class="flow">
+      <p>Two routes, depending on whether your check needs to send anything.</p>
+
+      <h3>The easy one: a new passive rule</h3>
+      <p>Say you want to report a missing <code>Cross-Origin-Opener-Policy</code> header.
+      That is four small edits and no migration.</p>
+
+      <ol class="steps">
+        <li><div class="step-body">
+          <h3>Add the rule name</h3>
+          <p>In <code>scanner/security/types.py</code>, add a member to
+          <code>FindingRule</code>. Rules are a validated string, not a database enum &mdash;
+          so adding one needs <em>no</em> migration. Only a new
+          <code>FindingCategory</code> does.</p>
+          <pre>SECURITY_HEADER_COOP_MISSING = <b>"SECURITY_HEADER_COOP_MISSING"</b></pre>
+        </div></li>
+
+        <li><div class="step-body">
+          <h3>Write the check</h3>
+          <p>In <code>scanner/security/headers.py</code>, next to the checks already there:</p>
+          <pre><span class="k">def</span> _check_coop(headers) -&gt; list[FindingData]:
+    <span class="k">if</span> _header(headers, <b>"cross-origin-opener-policy"</b>) <span class="k">is not None</span>:
+        <span class="k">return</span> []
+    <span class="k">return</span> [FindingData(
+        rule=FindingRule.SECURITY_HEADER_COOP_MISSING,
+        title=<b>"Cross-Origin-Opener-Policy not set"</b>,
+        category=FindingCategory.SECURITY_HEADER,
+        severity=FindingSeverity.LOW,
+        confidence=FindingConfidence.HIGH,
+        description=<b>"..."</b>,
+        evidence=<b>"No Cross-Origin-Opener-Policy header was present."</b>,
+        impact=<b>"..."</b>,
+        remediation=<b>"Send Cross-Origin-Opener-Policy: same-origin."</b>,
+    )]</pre>
+        </div></li>
+
+        <li><div class="step-body">
+          <h3>Call it</h3>
+          <p>Add one line inside <code>analyze_security_headers</code>, in the
+          document-only block with the other page-scoped headers.</p>
+          <pre>findings.extend(_check_coop(headers))</pre>
+        </div></li>
+
+        <li><div class="step-body">
+          <h3>Test it both ways</h3>
+          <p>In <code>tests/test_security_headers.py</code>, one test that it fires when
+          the header is missing, and &mdash; more important &mdash; one that it stays silent when
+          the header is present.</p>
+          <pre>.venv\Scripts\python -m pytest tests/test_security_headers.py</pre>
+        </div></li>
+      </ol>
+
+      <h3 style="margin-top:10px">The bigger one: an active detector</h3>
+      <p>If your check needs to send requests, write a detector instead. It must satisfy
+      exactly two methods, and it never gets a HTTP client of its own &mdash; it is handed a
+      <code>ProbeEngine</code>, which is what enforces scope, SSRF checks, redirect
+      limits and the request budget.</p>
+      <pre><span class="k">class</span> MyDetector:
+    name = <b>"my_check"</b>
+
+    <span class="k">def</span> eligible(self, target) -&gt; Eligibility:
+        <span class="c"># pure and cheap. no I/O here.</span>
+        <span class="k">if</span> target.method.upper() != <b>"GET"</b>:
+            <span class="k">return</span> Eligibility.no(<b>"non_get_method"</b>)
+        <span class="k">return</span> Eligibility.yes()
+
+    <span class="k">async def</span> probe(self, target, engine) -&gt; Sequence[DetectorObservation]:
+        outcome = <span class="k">await</span> engine.send(ProbeRequest(...))
+        <span class="c"># interpret, then return (url, FindingData) pairs</span>
+        <span class="k">return</span> []</pre>
+      <p>Then register it in <code>_active_detectors()</code> in
+      <code>services/scan_service.py</code>, behind its own
+      <code>*_ENABLED</code> setting. Nothing else needs to change &mdash; the pipeline and
+      the persistence layer already handle any detector.</p>
+
+      <details>
+        <summary>When do I need a database migration?</summary>
+        <p>Only for two things: a new <code>FindingCategory</code> (it is a native
+        Postgres enum, so it needs <code>ALTER TYPE</code> inside an
+        <code>autocommit_block()</code>), or new coverage columns on
+        <code>scans</code>. New <em>rules</em> never need one.</p>
+        <pre>alembic revision -m <b>"describe the change"</b>
+alembic upgrade head
+alembic downgrade -1     <span class="c"># always test the way back</span>
+alembic upgrade head</pre>
+      </details>
+    </div>
+  </section>
+
+  <!-- ================= PART 6 ================= -->
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">Part 6</span>
+      <h2>Reading a finding</h2>
+    </div>
+
+    <div class="flow">
+      <p>Every finding carries a severity and a confidence, and they answer different
+      questions. Severity is <em>how bad if real</em>. Confidence is <em>how sure we
+      are</em>. A HIGH/LOW is a guess about something serious; a LOW/HIGH is a certainty
+      about something small.</p>
+
+      <div class="sev-list">
+        <div class="sev-row">
+          <span class="sev-pill" style="color:var(--sev-high)">CRITICAL</span>
+          <p>Almost never used. Most phases are forbidden from emitting it, because the
+          scanner observes structure rather than confirming exploitation.</p>
+        </div>
+        <div class="sev-row">
+          <span class="sev-pill" style="color:var(--sev-high)">HIGH</span>
+          <p>Demonstrated or strongly-evidenced. A reproduced traversal canary, an
+          exposed <code>.env</code>, a reachable <code>.git</code> directory.</p>
+        </div>
+        <div class="sev-row">
+          <span class="sev-pill" style="color:var(--sev-med)">MEDIUM</span>
+          <p>Real weakening, impact depends on context. A missing CSP, a CSP that lets
+          script load from anywhere.</p>
+        </div>
+        <div class="sev-row">
+          <span class="sev-pill" style="color:var(--sev-low)">LOW</span>
+          <p>Worth fixing, small blast radius. Directory listing, a published source
+          map, HSTS without <code>includeSubDomains</code>.</p>
+        </div>
+        <div class="sev-row">
+          <span class="sev-pill" style="color:var(--sev-info)">INFO</span>
+          <p>Inventory and unanswered questions. A <code>Server</code> header. &ldquo;Session
+          expiry could not be determined.&rdquo; Not accusations.</p>
+        </div>
+      </div>
+
+      <div class="note">
+        <div class="bar"></div>
+        <div class="body">
+          <span class="t">Read the coverage before you trust the silence</span>
+          <p>Every report carries coverage counters, and several have a
+          <code>coverage_complete</code> flag. When it is false, a budget ran out or a
+          baseline was unusable &mdash; so the things that were not checked established
+          <em>nothing</em>. An empty findings list on an incomplete scan is not a clean
+          bill of health, and the report is written to say so.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= PART 7 ================= -->
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">Part 7</span>
+      <h2>The rules this codebase lives by</h2>
+    </div>
+
+    <div class="flow">
+      <p>Every phase follows these. If your addition follows them too, it will fit; if
+      it does not, it will feel wrong in review.</p>
+
+      <div class="principles">
+        <div class="principle">
+          <span class="mark">01</span>
+          <div>
+            <span class="p-t">Observe, classify, correlate, report.</span>
+            <p>In that order, and stop at the point the evidence stops.</p>
+          </div>
+        </div>
+        <div class="principle">
+          <span class="mark">02</span>
+          <div>
+            <span class="p-t">Unknown stays unknown.</span>
+            <p>A missing <code>Max-Age</code> is not &ldquo;the session never expires&rdquo;. A form
+            with no CSRF token is not &ldquo;CSRF is exploitable&rdquo;. Say what you saw.</p>
+          </div>
+        </div>
+        <div class="principle">
+          <span class="mark">03</span>
+          <div>
+            <span class="p-t">Not-checked is never the same as safe.</span>
+            <p>Anything a budget skipped is recorded as skipped, and surfaced.</p>
+          </div>
+        </div>
+        <div class="principle">
+          <span class="mark">04</span>
+          <div>
+            <span class="p-t">Never store a value.</span>
+            <p>Names, counts, statuses, media types &mdash; yes. Cookie values, tokens, file
+            contents, credentials, response bodies &mdash; never. The database schema is built
+            so there is nowhere to put them.</p>
+          </div>
+        </div>
+        <div class="principle">
+          <span class="mark">05</span>
+          <div>
+            <span class="p-t">One transport, one budget.</span>
+            <p>Every request goes through <code>HttpFetcher</code>. That is the single
+            place SSRF and same-origin rules are enforced, so no new code can escape them.</p>
+          </div>
+        </div>
+        <div class="principle">
+          <span class="mark">06</span>
+          <div>
+            <span class="p-t">Prove the negative.</span>
+            <p>For every test that a check fires, write one that it stays quiet. The
+            false-positive tests are the ones that make the tool usable.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= CHEATSHEET ================= -->
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">Reference</span>
+      <h2>Everyday commands</h2>
+    </div>
+
+    <pre><span class="c"># --- backend (from backend/, venv activated) ---</span>
+uvicorn app.main:app --reload --port 8000   <span class="c"># run the API</span>
+.venv\Scripts\python -m pytest              <span class="c"># all 1,049 tests</span>
+.venv\Scripts\python -m pytest tests/test_path_security.py <span class="k">-v</span>
+.venv\Scripts\python -m pytest <span class="k">-k</span> traversal      <span class="c"># match by name</span>
+
+alembic current                             <span class="c"># which migration is applied</span>
+alembic history --verbose                   <span class="c"># the whole chain</span>
+alembic upgrade head                        <span class="c"># apply everything</span>
+alembic downgrade -1                        <span class="c"># step back one</span>
+
+<span class="c"># --- frontend (from frontend/) ---</span>
+pnpm dev                                    <span class="c"># dev server on :3000</span>
+pnpm exec tsc --noEmit                      <span class="c"># typecheck</span>
+pnpm exec eslint .                          <span class="c"># lint</span>
+pnpm build                                  <span class="c"># production build</span></pre>
+
+    <p style="margin-top:18px">Before you commit anything, the four that must pass:
+    <code>pytest</code>, <code>tsc</code>, <code>eslint</code>, <code>pnpm build</code>.
+    If you touched the schema, add the migration round-trip to that list.</p>
+  </section>
+
+  <footer>
+    Guide to the web vulnerability scanner, current as of Phase 17
+    (path traversal and local file inclusion), Alembic head
+    <code>0015_path_security</code>. Only scan systems you own or have written
+    permission to test.
+  </footer>
+
+</div>
+
+</body>
+</html>
