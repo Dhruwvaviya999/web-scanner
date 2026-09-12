@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     # `crawler.types` import would pull the classifier in behind it.
     from app.scanner.api.types import JsonShape
     from app.scanner.api_security.types import ErrorSignal
+    from app.scanner.config_security.types import ConfigSignals
     from app.scanner.session_security.types import SessionSignals
 
 
@@ -173,6 +174,11 @@ class CapturedResponse:
     #: The tokens themselves are discarded with the body, so this cannot carry a
     #: credential any more than `json_shape` can carry a value.
     session_signals: "SessionSignals | None" = None
+    #: Deployment metadata: whether this was a directory index, whether it
+    #: carried development-mode markers, whether it is a default page, and any
+    #: source map URL the asset published. Booleans, counts and category names
+    #: — the page text that produced them is discarded with the body.
+    config_signals: "ConfigSignals | None" = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +202,7 @@ class FetchedPage:
         json_shape: "JsonShape | None" = None,
         error_signals: tuple["ErrorSignal", ...] = (),
         session_signals: "SessionSignals | None" = None,
+        config_signals: "ConfigSignals | None" = None,
     ) -> CapturedResponse:
         """Reduce this page to what is safe to keep. The body is dropped here."""
         return CapturedResponse(
@@ -208,4 +215,5 @@ class FetchedPage:
             json_shape=json_shape,
             error_signals=error_signals,
             session_signals=session_signals,
+            config_signals=config_signals,
         )

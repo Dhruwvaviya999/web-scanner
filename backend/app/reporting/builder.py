@@ -27,6 +27,7 @@ from app.reporting.types import (
     ReportAuthorization,
     ReportEndpointRef,
     ReportFinding,
+    ReportConfigSecurity,
     ReportMetadata,
     ReportSessionSecurity,
     ScanReport,
@@ -206,6 +207,7 @@ def _coverage(
         api=_api_surface(scan, api_endpoints, api_documents),
         api_security=_api_security(scan),
         session_security=_session_security(scan),
+        config_security=_config_security(scan),
     )
 
 
@@ -251,6 +253,35 @@ def _session_security(scan: Scan) -> ReportSessionSecurity:
         timeout_known=bool(scan.session_timeout_known),
         logout_endpoints_discovered=scan.session_logout_endpoints or 0,
         findings_count=scan.session_findings or 0,
+    )
+
+
+def _config_security(scan: Scan) -> ReportConfigSecurity:
+    """Configuration coverage from the stored counters.
+
+    `or 0` throughout, as elsewhere: a NULL counter means the stage never
+    reached that number, which for a report is the same as zero. `analyzed` is
+    what separates "observed nothing" from "was never asked to look".
+    """
+    return ReportConfigSecurity(
+        analyzed=bool(scan.config_analyzed),
+        https_used=bool(scan.config_https_used),
+        https_redirect=bool(scan.config_https_redirect),
+        hsts_observed=bool(scan.config_hsts_observed),
+        method_observations=scan.config_method_observations or 0,
+        debug_indicators=scan.config_debug_indicators or 0,
+        sensitive_files_checked=scan.config_files_checked or 0,
+        sensitive_files_exposed=scan.config_files_exposed or 0,
+        admin_endpoints_discovered=scan.config_admin_endpoints or 0,
+        management_endpoints_discovered=scan.config_management_endpoints or 0,
+        directory_listings=scan.config_directory_listings or 0,
+        source_maps=scan.config_source_maps or 0,
+        technology_disclosures=scan.config_technology_disclosures or 0,
+        path_normalization_observations=scan.config_path_observations or 0,
+        candidates_not_tested=scan.config_candidates_not_tested or 0,
+        requests_sent=scan.config_requests_sent or 0,
+        findings_count=scan.config_findings or 0,
+        budget_exhausted=bool(scan.config_budget_exhausted),
     )
 
 

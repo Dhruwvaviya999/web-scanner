@@ -161,6 +161,43 @@ export interface ReportSessionSecurity {
   csrf_conclusive: boolean;
 }
 
+/**
+ * Configuration and deployment coverage. Every field is a boolean or a count —
+ * there is no field for a response body, a file's contents, an environment
+ * variable, a secret, a repository object or a source line, because none of
+ * those ever reach the API.
+ *
+ * Read `candidates_not_tested` and `budget_exhausted` before anything else.
+ * This is the only late stage that sends requests, so its coverage can be cut
+ * short; a candidate the budget never reached established nothing, and
+ * `coverage_complete` is what says whether silence can be trusted.
+ */
+export interface ReportConfigSecurity {
+  analyzed: boolean;
+  https_used: boolean;
+  https_redirect: boolean;
+  hsts_observed: boolean;
+  method_observations: number;
+  debug_indicators: number;
+  sensitive_files_checked: number;
+  sensitive_files_exposed: number;
+  /** Administrative paths that answered. Not by itself a weakness. */
+  admin_endpoints_discovered: number;
+  management_endpoints_discovered: number;
+  directory_listings: number;
+  source_maps: number;
+  /** Headers naming the stack. Informational; this is how servers behave. */
+  technology_disclosures: number;
+  path_normalization_observations: number;
+  /** Never reached by the budget. Not the same as "came back clean". */
+  candidates_not_tested: number;
+  requests_sent: number;
+  findings_count: number;
+  budget_exhausted: boolean;
+  /** False when a budget cut the checks short — silence is then not evidence. */
+  coverage_complete: boolean;
+}
+
 export interface ReportMetadata {
   scan_id: string;
   target_url: string;
@@ -210,6 +247,8 @@ export interface CoverageSummary {
   api_security: ReportApiSecurity;
   /** Session handling and CSRF posture. Passive: the stage sends nothing. */
   session_security: ReportSessionSecurity;
+  /** Deployment and transport configuration. Bounded, and never a brute-force. */
+  config_security: ReportConfigSecurity;
   /**
    * True only when every discovered endpoint was analysed or deliberately
    * skipped, with no failures. A clean result with this false means the scan

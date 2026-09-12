@@ -67,6 +67,11 @@ class FindingCategory(str, enum.Enum):
     #: themselves, and whether a state-changing form shows any CSRF defence.
     #: Passive throughout — Phase 15 never forges, replays or fixes a session.
     SESSION_SECURITY = "SESSION_SECURITY"
+    #: How a deployment is set up rather than how it is coded: transport,
+    #: exposed deployment files, debug mode left on, administrative surface.
+    #: Phase 16 emits these; it never grades the absence of an optional
+    #: hardening measure as a weakness.
+    CONFIGURATION = "CONFIGURATION"
     INFORMATION_DISCLOSURE = "INFORMATION_DISCLOSURE"
     OTHER = "OTHER"
 
@@ -155,6 +160,47 @@ class FindingRule(str, enum.Enum):
     #: Session handling revealed something about the stack or its state that a
     #: client did not need to know.
     SESSION_INFORMATION_DISCLOSURE = "SESSION_INFORMATION_DISCLOSURE"
+
+    # --- Configuration and deployment (phase 16) ---
+    #: The application is served over plain HTTP with no upgrade offered.
+    #: Off by default and never raised for a loopback or private target.
+    CONFIG_INSECURE_HTTP = "CONFIG_INSECURE_HTTP"
+    #: An HSTS policy that does not cover what it should. Scoped to the axes
+    #: Phase 3 does not check — subdomain coverage, and HSTS sent over HTTP.
+    CONFIG_WEAK_HSTS = "CONFIG_WEAK_HSTS"
+    #: A method advertised where it does not belong, or a diagnostic method
+    #: such as TRACE. Advertisement only: no unsafe method is ever invoked.
+    CONFIG_UNSAFE_HTTP_METHODS = "CONFIG_UNSAFE_HTTP_METHODS"
+    #: The target is running in development configuration.
+    CONFIG_DEBUG_EXPOSURE = "CONFIG_DEBUG_EXPOSURE"
+    #: A deployment file that should not be under a web root was served.
+    CONFIG_SENSITIVE_FILE_EXPOSURE = "CONFIG_SENSITIVE_FILE_EXPOSURE"
+    #: Version-control metadata is reachable. Detected from one file; the
+    #: repository is never enumerated or reconstructed.
+    CONFIG_REPOSITORY_METADATA_EXPOSURE = "CONFIG_REPOSITORY_METADATA_EXPOSURE"
+    #: A server-generated directory index was served in place of a page.
+    CONFIG_DIRECTORY_LISTING = "CONFIG_DIRECTORY_LISTING"
+    #: A default or sample page shipped by the server or framework is live.
+    CONFIG_DEFAULT_SAMPLE_EXPOSURE = "CONFIG_DEFAULT_SAMPLE_EXPOSURE"
+    #: An administrative interface answered an anonymous request.
+    CONFIG_ADMIN_INTERFACE_EXPOSURE = "CONFIG_ADMIN_INTERFACE_EXPOSURE"
+    #: A management or operations endpoint exposed internal detail.
+    CONFIG_MANAGEMENT_INTERFACE_EXPOSURE = "CONFIG_MANAGEMENT_INTERFACE_EXPOSURE"
+    #: The stack names itself in a response header. Informational: this is the
+    #: default behaviour of most web servers, not a weakness.
+    CONFIG_TECHNOLOGY_DISCLOSURE = "CONFIG_TECHNOLOGY_DISCLOSURE"
+    #: A CSP that places no restriction on where script may come from. Scoped
+    #: off Phase 3's permissive-directive rule, which covers unsafe-inline.
+    CONFIG_WEAK_CSP = "CONFIG_WEAK_CSP"
+    #: A security header present but structurally broken — duplicated and
+    #: conflicting, empty, or one browsers no longer honour.
+    CONFIG_HEADER_MISCONFIGURATION = "CONFIG_HEADER_MISCONFIGURATION"
+    #: Two layers disagree about what a path addresses.
+    CONFIG_PATH_NORMALIZATION = "CONFIG_PATH_NORMALIZATION"
+    #: A JavaScript source map is reachable. Often deliberate; graded low.
+    CONFIG_SOURCE_MAP_EXPOSURE = "CONFIG_SOURCE_MAP_EXPOSURE"
+    #: A TLS handshake the client refused to complete.
+    CONFIG_TLS_CONNECTION_FAILURE = "CONFIG_TLS_CONNECTION_FAILURE"
 
     # --- Cookies ---
     COOKIE_SECURE_MISSING = "COOKIE_SECURE_MISSING"

@@ -53,6 +53,10 @@ from app.scanner.api_security.types import ApiSecurityConfig, ApiSecurityLimits
 from app.scanner.authorization import AuthorizationConfig, AuthorizationBudgetLimits
 from app.scanner.authorization.matrix import AuthorizationPlan
 from app.scanner.security.types import FindingSeverity
+from app.scanner.config_security.types import (
+    ConfigSecurityConfig,
+    ConfigSecurityLimits,
+)
 from app.scanner.session_security.types import (
     SessionSecurityConfig,
     SessionSecurityLimits,
@@ -95,6 +99,7 @@ MODULE_STAGE: dict[str, ScanStage] = {
     "active_scan": ScanStage.ANALYZING,
     "authorization": ScanStage.AUTHORIZATION,
     "session_security": ScanStage.SESSION_SECURITY_ANALYSIS,
+    "config_security": ScanStage.CONFIGURATION_SECURITY,
 }
 
 
@@ -187,6 +192,32 @@ def _session_security_config() -> SessionSecurityConfig:
             max_requests=settings.SESSION_MAX_REQUESTS,
         ),
         flag_plaintext_http=settings.SESSION_FLAG_PLAINTEXT_HTTP,
+    )
+
+
+def _config_security_config() -> ConfigSecurityConfig:
+    """Bounds for configuration and deployment analysis.
+
+    Unlike the two stages before it this one does send requests, so the budget
+    is a real ceiling rather than a formality. Every candidate list it draws
+    from is a constant, so these numbers bound a small fixed set — there is no
+    wordlist for them to scale.
+    """
+    return ConfigSecurityConfig(
+        enabled=settings.CONFIG_SECURITY_ENABLED,
+        limits=ConfigSecurityLimits(
+            max_requests=settings.CONFIG_SECURITY_MAX_REQUESTS,
+            max_admin_candidates=settings.CONFIG_SECURITY_MAX_ADMIN_CANDIDATES,
+            max_sensitive_file_candidates=settings.CONFIG_SECURITY_MAX_FILE_CANDIDATES,
+            max_backup_candidates=settings.CONFIG_SECURITY_MAX_BACKUP_CANDIDATES,
+            max_backup_variants_per_file=settings.CONFIG_SECURITY_MAX_BACKUP_VARIANTS,
+            max_source_maps=settings.CONFIG_SECURITY_MAX_SOURCE_MAPS,
+            max_method_checks=settings.CONFIG_SECURITY_MAX_METHOD_CHECKS,
+            max_responses_analyzed=settings.CONFIG_SECURITY_MAX_RESPONSES,
+            max_candidate_bytes=settings.CONFIG_SECURITY_MAX_CANDIDATE_BYTES,
+        ),
+        require_https=settings.CONFIG_SECURITY_REQUIRE_HTTPS,
+        probe_candidates=settings.CONFIG_SECURITY_PROBE_CANDIDATES,
     )
 
 
@@ -367,6 +398,7 @@ def execute_scan(
             api_config=_api_config(),
             api_security_config=_api_security_config(),
             session_config=_session_security_config(),
+            config_security=_config_security_config(),
         ).scan_sync(target_url)
     except Exception:  # noqa: BLE001 - the scan must not be left RUNNING
         logger.exception("Scan %s raised while running", scan_id)
@@ -431,6 +463,7 @@ def _finish(scan_id: uuid.UUID, report: ScanReport, stage: _StageTracker) -> Sca
         )
         _apply_api_security(scan, report)
         _apply_session_security(scan, report)
+        _apply_config_security(scan, report)
 
         aggregated = report.analysis.findings if report.analysis else []
         finding_service.replace_findings(db, scan, aggregated, endpoints_by_url)
@@ -624,6 +657,39 @@ def _apply_session_security(scan: Scan, report: ScanReport) -> None:
     scan.session_timeout_known = outcome.timeout_metadata_available
     scan.session_logout_endpoints = outcome.logout_endpoints_discovered
     scan.session_findings = outcome.findings_count
+
+
+def _apply_config_security(scan: Scan, report: ScanReport) -> None:
+    """Record what configuration analysis observed.
+
+    Counters and booleans only. The observations carry paths, status codes,
+    media types, sizes and category names — never a file's contents, a secret,
+    a source line or a repository object — and the findings they produced have
+    already gone into the shared aggregation.
+    """
+    result = report.config_security
+    if result is None:
+        return
+
+    outcome = result.outcome()
+    scan.config_analyzed = outcome.analyzed
+    scan.config_https_used = outcome.https_used
+    scan.config_https_redirect = outcome.https_redirect
+    scan.config_hsts_observed = outcome.hsts_observed
+    scan.config_method_observations = outcome.method_observations
+    scan.config_debug_indicators = outcome.debug_indicators
+    scan.config_files_checked = outcome.sensitive_files_checked
+    scan.config_files_exposed = outcome.sensitive_files_exposed
+    scan.config_admin_endpoints = outcome.admin_endpoints_discovered
+    scan.config_management_endpoints = outcome.management_endpoints_discovered
+    scan.config_directory_listings = outcome.directory_listings
+    scan.config_source_maps = outcome.source_maps
+    scan.config_technology_disclosures = outcome.technology_disclosures
+    scan.config_path_observations = outcome.path_normalization_observations
+    scan.config_candidates_not_tested = outcome.candidates_not_tested
+    scan.config_requests_sent = outcome.requests_sent
+    scan.config_findings = outcome.findings_count
+    scan.config_budget_exhausted = outcome.budget_exhausted
 
 
 def _apply_probe(scan: Scan, report: ScanReport) -> None:

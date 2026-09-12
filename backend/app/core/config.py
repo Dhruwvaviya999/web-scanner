@@ -166,6 +166,34 @@ class Settings(BaseSettings):
     #: one as a transport failure would be wrong more often than right.
     SESSION_FLAG_PLAINTEXT_HTTP: bool = False
 
+    # --- Configuration, deployment and transport security (phase 16) ---
+    # Bounded GET/HEAD/OPTIONS against fixed candidate lists. There is no
+    # wordlist, no recursion and no filename generation anywhere in the stage,
+    # so these numbers bound a small constant rather than an open-ended sweep.
+    CONFIG_SECURITY_ENABLED: bool = True
+    #: Every request the stage may make, across all candidate lists.
+    CONFIG_SECURITY_MAX_REQUESTS: int = Field(default=100, ge=0, le=500)
+    CONFIG_SECURITY_MAX_ADMIN_CANDIDATES: int = Field(default=50, ge=0, le=200)
+    CONFIG_SECURITY_MAX_FILE_CANDIDATES: int = Field(default=50, ge=0, le=200)
+    CONFIG_SECURITY_MAX_BACKUP_CANDIDATES: int = Field(default=50, ge=0, le=200)
+    #: Backup spellings derived per file the scan already found. Three, not a
+    #: wordlist — raising this turns a check into enumeration.
+    CONFIG_SECURITY_MAX_BACKUP_VARIANTS: int = Field(default=3, ge=0, le=5)
+    CONFIG_SECURITY_MAX_SOURCE_MAPS: int = Field(default=10, ge=0, le=50)
+    CONFIG_SECURITY_MAX_METHOD_CHECKS: int = Field(default=20, ge=0, le=100)
+    CONFIG_SECURITY_MAX_RESPONSES: int = Field(default=200, ge=1, le=2000)
+    #: Bytes read from a candidate before the body is discarded. Enough to tell
+    #: a real file from a catch-all HTML route; nowhere near a download.
+    CONFIG_SECURITY_MAX_CANDIDATE_BYTES: int = Field(default=8192, ge=256, le=65536)
+    #: Whether the stage requests candidate paths at all. Off makes it fully
+    #: passive: it then reads only what earlier phases already captured.
+    CONFIG_SECURITY_PROBE_CANDIDATES: bool = True
+    #: Whether a plain-HTTP target is reported as a transport finding. Off by
+    #: default, and loopback and private-network targets stay exempt even when
+    #: it is on — a developer scanning their own machine has misconfigured
+    #: nothing, and grading it would be wrong more often than right.
+    CONFIG_SECURITY_REQUIRE_HTTPS: bool = False
+
     @field_validator("JWT_SECRET_KEY")
     @classmethod
     def _reject_placeholder_secret(cls, value: str) -> str:

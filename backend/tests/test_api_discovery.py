@@ -33,6 +33,7 @@ from app.models.api_surface import ApiDocument, ApiEndpointRow, split_list
 from app.models.scan import Scan, ScanStatus
 from app.models.user import User
 from app.scanner import ScannerConfig, WebScanner
+from app.scanner.config_security.types import ConfigSecurityConfig
 from app.scanner.api.classifier import (
     classify,
     is_api_media_type,
@@ -288,6 +289,10 @@ def run_scan(base_url: str, *, authenticated: bool = False, **overrides):
         detectors=[],
         authentication=authentication,
         api_config=ApiDiscoveryConfig(**overrides),
+        # Phase 16 is disabled here so this suite keeps testing the stage it
+        # was written for. The configuration stage legitimately sends OPTIONS,
+        # and the safe-method guarantee for it is asserted in its own suite.
+        config_security=ConfigSecurityConfig(enabled=False),
     ).scan_sync(base_url)
 
 

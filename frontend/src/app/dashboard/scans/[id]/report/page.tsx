@@ -11,6 +11,7 @@ import { FindingsSection } from "@/components/report/report-findings";
 import { ReportApiSection } from "@/components/report/report-api";
 import { ReportApiSecuritySection } from "@/components/report/report-api-security";
 import { ReportSessionSecuritySection } from "@/components/report/report-session-security";
+import { ReportConfigSecuritySection } from "@/components/report/report-config-security";
 import {
   AuthorizationSummary,
   fromReport,
@@ -101,6 +102,7 @@ export default function ScanReportPage({ params }: PageProps<"/dashboard/scans/[
 
       <ReportApiSecuritySection api={report.coverage.api_security} />
       <ReportSessionSecuritySection session={report.coverage.session_security} />
+      <ReportConfigSecuritySection config={report.coverage.config_security} />
 
       <AuthorizationSummary view={fromReport(report.coverage.authorization)} />
 

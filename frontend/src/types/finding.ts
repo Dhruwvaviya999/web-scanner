@@ -9,6 +9,7 @@ export const FINDING_CATEGORIES = [
   "AUTHORIZATION",
   "API_SECURITY",
   "SESSION_SECURITY",
+  "CONFIGURATION",
   "INFORMATION_DISCLOSURE",
   "OTHER",
 ] as const;
@@ -85,6 +86,7 @@ export const CATEGORY_LABELS: Record<FindingCategory, string> = {
   AUTHORIZATION: "Access control",
   API_SECURITY: "API security",
   SESSION_SECURITY: "Session security",
+  CONFIGURATION: "Configuration",
   INFORMATION_DISCLOSURE: "Information disclosure",
   OTHER: "Other",
 };

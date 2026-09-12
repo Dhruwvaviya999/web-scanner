@@ -299,7 +299,7 @@ Always change the schema through a migration; never edit the database by hand.
 
 ```bash
 cd backend
-.venv\Scripts\python -m pytest          # 881 tests
+.venv\Scripts\python -m pytest          # 988 tests
 ```
 
 | Suite | Covers |
@@ -328,6 +328,7 @@ cd backend
 | `test_api_discovery.py` | API classification, JSON structure, OpenAPI/Swagger parsing, GraphQL detection, budgets, leakage |
 | `test_api_security.py` | Field classification and its false-positive controls, property comparison, verbose errors, CORS, inventory, leakage |
 | `test_session_security.py` | Session cookie classification and its exclusions, identifiers in URLs, the CSRF verdict scale and what it refuses to claim, JWT metadata, timeout honesty, leakage |
+| `test_config_security.py` | Transport and HSTS boundaries against Phase 3, method advertisement, bounded candidate lists and the absence of enumeration, catch-all guards, debug/listing/source-map detection, CSP grading, budget honesty, leakage |
 
 The detector and crawler suites need no network: the crawler's page fetcher is injected, so
 limits, cycles and failure handling are deterministic. The API suites drive the real app through
@@ -2316,6 +2317,257 @@ replay. No token cracking or forging. No logout invocation. No automatic
 submission of any `POST`, `PUT`, `PATCH` or `DELETE` form. No blind or
 time-based SQL injection, and no data extraction. It sends no request of its own.
 
+## Configuration, deployment and transport security (Phase 16)
+
+Phase 16 asks how a target is *deployed* rather than how it is coded. A missing
+HTTPS redirect, a `.env` under the web root, a debug page left switched on, a
+repository directory shipped to production — none is a bug in the application,
+and all of them are how applications get broken into.
+
+It is the first stage since Phase 13 to send requests of its own, so most of
+what follows is about what it will and will not do.
+
+### The scanner does not brute-force directories or download arbitrary files
+
+This is the constraint the whole phase is built around, and it is worth stating
+plainly because most tools in this category do the opposite.
+
+* **Candidate paths are constants.** Fewer than a hundred literal strings across
+  seven lists, in `config_security/discovery.py`. There is no wordlist, no
+  generator, no permutation and no recursion. Adding a path means editing a
+  tuple, which is a code review.
+* **Repository metadata is one request.** `/.git/HEAD` proves the directory is
+  served, and that is the entire finding. The scanner does not fetch
+  `/.git/config`, walk refs, or pull objects — reconstructing the repository is
+  the attack this check warns about, not something to perform in order to warn
+  about it.
+* **Backups derive from evidence.** Three suffixes for a file the scan actually
+  found, capped for the whole run. `/config.json` → `/config.json.bak` is a
+  check; walking a list of names is enumeration, and the difference is where the
+  first term comes from.
+* **Source maps are reference-driven.** A map is fetched only when a JavaScript
+  asset published its URL in a `sourceMappingURL` comment. No map filename is
+  ever guessed.
+* **Only GET, HEAD and OPTIONS are ever sent.** The set is enforced in
+  `HttpFetcher` itself, not left to callers — a detector wanting to send a
+  `DELETE` would have to edit the transport, in one place, in an obvious way.
+* **Everything goes through the existing fetcher**, so every request inherits
+  the SSRF revalidation, the same-origin lock, the redirect bounds and the
+  credential scoping that the rest of the scanner already has.
+
+### Coverage is bounded, and says so when the bound bites
+
+Total request budget defaults to 100, with sub-budgets per list. A candidate the
+budget never reached is recorded as `NOT_TESTED`, never dropped and never
+conflated with `NOT_FOUND`. The report surfaces `candidates_not_tested` and
+`budget_exhausted`, and `coverage_complete` is false whenever either is set — so
+a truncated scan reports partial coverage instead of appearing to have looked
+everywhere and found nothing.
+
+Setting `CONFIG_SECURITY_PROBE_CANDIDATES=false` makes the stage fully passive:
+it then sends nothing and still produces the transport, header, CSP, technology,
+debug, directory-listing and path-normalization analysis from what earlier
+phases captured.
+
+### Transport and HSTS
+
+Transport comes from the probe the scan already made: which scheme answered,
+whether a plaintext request was upgraded, and whether the certificate verified.
+
+`CONFIG_INSECURE_HTTP` has two gates. It is off by default
+(`CONFIG_SECURITY_REQUIRE_HTTPS`), and loopback and private-network targets are
+exempt **even when it is on** — a developer scanning their own machine over HTTP
+has misconfigured nothing, and grading it would be wrong far more often than
+right.
+
+HSTS is where the Phase 3 boundary matters. Phase 3 reports the header *missing*,
+*disabled* (`max-age=0`) and *short*. Phase 16 grades only the two axes Phase 3
+cannot see, so no defect is ever reported twice:
+
+| Case | Reported by |
+| ---- | ----------- |
+| No HSTS on an HTTPS response | Phase 3 (`SECURITY_HEADER_HSTS_MISSING`) |
+| `max-age=0` | Phase 3 (`SECURITY_HEADER_HSTS_DISABLED`) |
+| `max-age` below 180 days | Phase 3 (`SECURITY_HEADER_HSTS_SHORT_MAX_AGE`) |
+| Long `max-age`, no `includeSubDomains` | **Phase 16** (`CONFIG_WEAK_HSTS`, LOW) |
+| HSTS sent over plain HTTP, where browsers discard it | **Phase 16** (`CONFIG_WEAK_HSTS`, INFO) |
+
+`preload` is recorded and never required: it is a public commitment with a
+removal process measured in months, and plenty of correct deployments decline it.
+
+TLS is deliberately shallow. There is no cipher enumeration, no downgrade
+attempt, no renegotiation and no certificate exploitation. The client already
+verifies certificates as a side effect of connecting, and a rejected one is
+reported as rejected — *which* defect it had is not determined, because the
+client does not say and guessing would put a specific claim into a report on no
+evidence.
+
+### HTTP methods: advertisement is not behaviour
+
+`OPTIONS` is sent and the answer is read. That answer is **documentation**: an
+`Allow` header saying `DELETE` does not mean the handler exists or that
+authorization permits it. Finding out would mean sending a `DELETE` to
+somebody's endpoint, and no scanner output is worth that — so `advertised`,
+`observed` and `untested` are three separate fields and stay that way.
+
+The obvious wrong inference is refused: `DELETE` on `/api/orders/1` is REST, not
+a vulnerability, and produces nothing. What is reported is a *surprise* — a
+state-changing method advertised somewhere that is not an API, or `TRACE` and
+`TRACK`, which echo the request back and have no place in a deployed
+application. TRACE is never invoked against a live target; the option to confirm
+it exists only for the local fixture.
+
+### Debug and development exposure
+
+Recognised from framework debug pages, interactive consoles, debug toolbars,
+development-server banners, diagnostic headers and explicit environment markers.
+
+**Two independent markers are required**, or one plus a diagnostic leak Phase 14
+already found on the same response. One marker is a coincidence waiting to be
+reported — the word "debug" appears in plenty of production pages. An interactive
+console raises the finding to HIGH, because a debugger that evaluates code from
+the browser is a direct route to compromise.
+
+The text that matched is never recorded. A framework debug page contains exactly
+the stack frames, local variables and settings this finding reports as exposed;
+quoting any of it would make the report the disclosure.
+
+### Deployment files, admin and management surface
+
+Candidate responses are classified conservatively in both directions. A 404 is
+`NOT_FOUND`; a 401 or 403 is `PROTECTED`, which is the *correct* configuration
+and never a finding; a 200 counts as `EXPOSED` only when the body has the shape
+of the file requested. That last guard matters more than it sounds: a
+single-page application answers `/.env` with its shell HTML and a 200, and
+without the check every candidate would be reported as exposed on every SPA in
+existence.
+
+`robots.txt` is fetched because it maps the site and is never reported — it is
+meant to be public.
+
+Administrative paths get the most restraint of anything in the phase. **A path
+containing "admin" is not an exposure.** An anonymous request being *served* is
+a different statement, and even that defaults to INFO, because many applications
+correctly serve a login form there and it looks identical from outside. The
+finding rises to HIGH only when a Phase 12 authorization policy says an
+anonymous request should have been refused. With no policy, the answer is
+`UNKNOWN`.
+
+Health and metrics endpoints are inventory. `{"status":"UP"}` is a correctly
+built health check and produces nothing. A management endpoint becomes a finding
+only when it returns configuration rather than status — `/actuator/env` and its
+neighbours, or a bare `/actuator` index large enough to be listing the surface.
+
+### Directory listings, defaults, source maps, technology
+
+A **directory listing** needs a structural marker — an "Index of /" heading or a
+parent-directory link — not merely a page with links on it. A site's own index
+page is a page.
+
+**Source maps** are LOW and worded as something to confirm rather than a defect.
+Plenty of teams publish them deliberately so production errors are debuggable.
+Only the count of original files is recorded; no source is read.
+
+**Technology disclosure** is INFO and stays there. Almost every web server sends
+a `Server` header, and a scanner that grades each one as a weakness produces a
+findings list people filter out unread. Headers that could carry a credential
+are excluded from the observation by a separate deny-list, as a second line.
+
+### CSP quality
+
+Phase 3 reports a missing policy, and flags `'unsafe-inline'` / `'unsafe-eval'`
+at INFO. Phase 16 grades a different axis — whether script may be loaded from
+*anywhere* — and emits `CONFIG_WEAK_CSP` only for `UNRESTRICTED`: a wildcard or
+scheme source (`*`, `https:`, `data:`, `blob:`) governing script, or a
+wildcarded `default-src` with no `script-src` to override it.
+
+`'unsafe-inline'` alone grades `WEAKENED` and produces **nothing here**, because
+Phase 3 has already said it. The grade also recognises what neither phase
+reported before: a nonce or hash source makes `'unsafe-inline'` inert in every
+modern browser, so a policy Phase 3 flags as permissive may in fact be strong.
+
+Separately, `CONFIG_HEADER_MISCONFIGURATION` covers security headers that are
+*present but broken* — duplicated with conflicting values, empty, structurally
+invalid, or deprecated. Absence remains Phase 3's subject throughout.
+
+### Path normalization
+
+Where a proxy and an application resolve a URL differently, an access rule
+written against one spelling can be sidestepped with another. This detects the
+disagreement from responses the crawl already collected; it sends no traversal
+payload and fuzzes no encoded path. That costs sensitivity, and it should —
+firing a few hundred encoded paths at somebody's server is an attack.
+
+The false-positive guard is the mirror image: most frameworks serve `/about` and
+`/about/` identically and that is normal, so a divergence is recorded only when
+the two spellings answered *differently*.
+
+### Rules
+
+All category `CONFIGURATION`. **None is CRITICAL** — a misconfiguration is a door
+left open, not a demonstrated break-in.
+
+| Rule | Fires when | Default |
+| ---- | ---------- | ------- |
+| `CONFIG_INSECURE_HTTP` | Plain HTTP with no upgrade. Off by default; local targets always exempt. | MEDIUM |
+| `CONFIG_WEAK_HSTS` | No `includeSubDomains`, or HSTS over plain HTTP. | LOW / INFO |
+| `CONFIG_TLS_CONNECTION_FAILURE` | The client refused the certificate. | MEDIUM |
+| `CONFIG_UNSAFE_HTTP_METHODS` | A diagnostic method, or a state-changing one off an API path. | MEDIUM / LOW |
+| `CONFIG_DEBUG_EXPOSURE` | Two development markers, or one plus a Phase 14 leak. | HIGH / MEDIUM |
+| `CONFIG_SENSITIVE_FILE_EXPOSURE` | A deployment file was served with the right shape. | HIGH / MEDIUM |
+| `CONFIG_REPOSITORY_METADATA_EXPOSURE` | `/.git/HEAD` answered with Git structure. | HIGH |
+| `CONFIG_ADMIN_INTERFACE_EXPOSURE` | An admin path served an anonymous request. | HIGH with policy, else INFO |
+| `CONFIG_MANAGEMENT_INTERFACE_EXPOSURE` | A management endpoint returned configuration. | MEDIUM |
+| `CONFIG_DIRECTORY_LISTING` | A server-generated index was served. | LOW |
+| `CONFIG_DEFAULT_SAMPLE_EXPOSURE` | Default or sample content is live. | LOW |
+| `CONFIG_SOURCE_MAP_EXPOSURE` | A published source map answered. | LOW |
+| `CONFIG_WEAK_CSP` | Script may load from anywhere. | MEDIUM |
+| `CONFIG_HEADER_MISCONFIGURATION` | A security header present but broken. | MEDIUM / LOW / INFO |
+| `CONFIG_PATH_NORMALIZATION` | Two layers disagree about a path. | LOW |
+| `CONFIG_TECHNOLOGY_DISCLOSURE` | A header names the stack. Normal. | INFO |
+
+### What never reaches a finding
+
+Paths, status codes, media types, sizes, counts, category names and header
+values from a vetted list. **Never** a response body, a file's contents, an
+environment variable, a secret, a credential, a cookie, a token, a repository
+object, a Git ref or a line of source. The evidence says:
+
+> GET /.env returned a successful response with a configuration-file content
+> type, 412 bytes. No part of the response body was retained.
+
+and never what was in it. Candidate bodies are read inside the function that
+classifies them and go out of scope there; nothing downstream has access to one.
+The database schema reflects this — every Phase 16 column is an integer or a
+boolean.
+
+### What Phase 16 does not do
+
+No directory brute-forcing. No recursive file enumeration. No arbitrary backup
+discovery. No downloading of arbitrary files. No repository cloning or source
+retrieval. No destructive HTTP methods, and no `PUT`, `PATCH` or `DELETE` at
+all. No credential attacks, authentication bypass or privilege escalation. No
+exploit generation. No TLS scanning beyond whether the handshake verified.
+
+### Limitations
+
+* **Bounded discovery misses things.** A deployment file at a path not on the
+  list will not be found, and that is the deliberate trade for not being a
+  brute-forcer.
+* **A protected path is indistinguishable from an absent one** where the target
+  answers 404 for both, which is a reasonable thing for a target to do.
+* **Admin exposure needs a policy to be judged.** Without one the verdict is
+  informational, because an admin panel behind a login this scan was not given
+  looks exactly like one left open.
+* **`OPTIONS` is a claim.** A method advertised may not be enabled, and one that
+  is enabled may not be advertised. Neither is resolved, because resolving it
+  means sending the method.
+* **TLS detail is shallow.** A certificate failure is reported without a cause,
+  and a valid certificate is not inspected for expiry, chain or key strength.
+* **Path normalization is passive.** Only disagreements visible in already-
+  collected responses are found; a bypass that needs a crafted encoding to
+  surface will not be.
+
 ---
 
 ## API overview
@@ -2471,6 +2723,20 @@ the server and mirrored by Zod in the browser; the server is authoritative.
   neither a pass nor a finding.
 * **Logout endpoints are recorded, never called.** Whether the server actually invalidates a
   session on logout is not tested; a `200` from a logout URL would not establish it anyway.
+* **Deployment discovery is bounded, not exhaustive.** Configuration checks use fixed
+  candidate lists of fewer than a hundred literal paths. There is no directory brute-forcing,
+  no filename enumeration and no recursion, so a deployment file at an unconventional path
+  will not be found. That is the deliberate trade for not behaving like a brute-forcer.
+* **A candidate the budget did not reach is not a candidate that passed.** The stage stops at
+  its request ceiling and reports the shortfall; a report with `coverage_complete` false covers
+  less than its candidate lists, and silence about the remainder means nothing.
+* **An administrative path answering is not an exposure.** Without a declared authorization
+  policy the scanner cannot tell a login form from an open dashboard, and says so at
+  informational rather than guessing.
+* **`OPTIONS` reports what a server advertises, not what it does.** No state-changing method is
+  ever sent, so an advertised `DELETE` is unverified and an unadvertised one is undetected.
+* **TLS analysis is shallow by design.** A rejected certificate is reported without a cause, and
+  a valid one is not inspected for expiry, chain, key strength or protocol support.
 * **JWTs are recognised, not evaluated.** The scanner reads the algorithm label and the claim
   names a token publishes and discards the token. It verifies no signature, so a token signed
   with a weak or leaked key is indistinguishable here from a correctly signed one.
@@ -2591,10 +2857,11 @@ Planned, in order. Everything from Phase 3 onward is unimplemented.
 | 12 | Authorization testing: anonymous, horizontal, vertical, object-level | done |
 | 13 | API discovery: classification, OpenAPI/Swagger, GraphQL presence | done |
 | 14 | API security baseline: sensitive data, verbose errors, CORS, inventory | done |
-| 15 | Session security and conservative CSRF analysis | **done - current release** |
-| 16 | TLS inspection and risk scoring | planned |
-| 17 | Further active testing: open redirect, CSRF verification | planned |
-| 18 | Additional export formats (PDF, SARIF), background execution | planned |
+| 15 | Session security and conservative CSRF analysis | done |
+| 16 | Configuration, deployment and transport security | **done - current release** |
+| 17 | Deeper TLS inspection and risk scoring | planned |
+| 18 | Further active testing: open redirect, CSRF verification | planned |
+| 19 | Additional export formats (PDF, SARIF), background execution | planned |
 
 The attack surface discovered in Phase 4 is what later detectors consume: endpoints and
 their parameters are the injection points an XSS or SQL-injection check needs, and the forms it

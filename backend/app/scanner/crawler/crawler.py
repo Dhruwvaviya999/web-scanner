@@ -23,6 +23,7 @@ from app.scanner.api.parser import summarize_body
 from app.scanner.api.types import JsonShape
 from app.scanner.api_security.error_analyzer import safe_detect
 from app.scanner.cancellation import CancellationToken, ScanCancelled
+from app.scanner.config_security.deployment import safe_signals_for
 from app.scanner.crawler.html_parser import decode_html, extract_forms, extract_links
 from app.scanner.crawler.types import (
     CrawlConfig,
@@ -151,6 +152,15 @@ class Crawler:
                 # its algorithm and claim names before the body goes away. The
                 # token never leaves this line.
                 session_signals=_safe_session_signals(page),
+                # And once more: whether this page was a directory index, a
+                # default page or a debug page, and any source map the asset
+                # published — all decided here, while the body still exists.
+                config_signals=safe_signals_for(
+                    page.url,
+                    headers=page.headers,
+                    body=page.body,
+                    status_code=page.status_code,
+                ),
             )
 
             # Only documents carry links and forms; a JSON or image response is

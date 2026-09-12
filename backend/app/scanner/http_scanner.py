@@ -39,6 +39,15 @@ logger = logging.getLogger(__name__)
 
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
+#: Methods this transport will send. GET is the whole of phases 1-15; HEAD and
+#: OPTIONS were added for configuration analysis, which needs to ask what an
+#: endpoint supports without invoking anything.
+#:
+#: The set is enforced here rather than left to callers on purpose. A detector
+#: that wanted to send a DELETE would have to change this line, in this file,
+#: which is a code review nobody can miss.
+SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
 #: Decides whether a redirect hop may be followed. Used by the crawler to keep a
 #: redirect from carrying it onto another origin. Taking a plain callable avoids
 #: importing the crawler package here, which would be circular.
@@ -86,14 +95,38 @@ class HttpFetcher:
             max_redirects if max_redirects is not None else config.max_redirects
         )
 
-    async def fetch(self, target: ScanTarget, *, read_body: bool = True) -> RawHttpResponse:
+    async def fetch(
+        self,
+        target: ScanTarget,
+        *,
+        read_body: bool = True,
+        method: str = "GET",
+    ) -> RawHttpResponse:
+        """Fetch one URL, following redirects within the configured bounds.
+
+        `method` must be one of `SAFE_METHODS`. A HEAD or OPTIONS request goes
+        through exactly the same SSRF revalidation, redirect handling, origin
+        check and credential scoping as a GET, because it is the same code path
+        — which is the reason for extending this rather than writing a second
+        client for configuration checks.
+        """
+        normalized_method = method.strip().upper()
+        if normalized_method not in SAFE_METHODS:
+            raise ValueError(
+                f"{normalized_method} is not a method this scanner sends; "
+                f"allowed: {', '.join(sorted(SAFE_METHODS))}"
+            )
+
         started = time.perf_counter()
         current = target
         redirect_count = 0
+        # A HEAD response has no body by definition, and an OPTIONS response
+        # carries its answer in the headers.
+        wants_body = read_body and normalized_method == "GET"
 
         while True:
             await self._ensure_allowed(current)
-            response = await self._send(current.normalized_url)
+            response = await self._send(current.normalized_url, normalized_method)
             try:
                 location = response.headers.get("location")
 
@@ -119,7 +152,7 @@ class HttpFetcher:
                 # counted as the target's response time.
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
                 body, truncated = (
-                    await self._read_body(response) if read_body else (b"", False)
+                    await self._read_body(response) if wants_body else (b"", False)
                 )
 
                 return RawHttpResponse(
@@ -175,8 +208,8 @@ class HttpFetcher:
             allow_private_networks=self._config.allow_private_networks,
         )
 
-    async def _send(self, url: str) -> httpx.Response:
-        """Send a GET and return the response with its body still unread.
+    async def _send(self, url: str, method: str = "GET") -> httpx.Response:
+        """Send one request and return the response with its body still unread.
 
         Authentication is attached per request rather than on the client, and
         only for a URL inside the authorized origin. That ordering is what stops
@@ -185,7 +218,7 @@ class HttpFetcher:
         URL the user did not authorize.
         """
         request = self._client.build_request(
-            "GET", url, headers=self._authentication.headers_for(url)
+            method, url, headers=self._authentication.headers_for(url)
         )
         try:
             return await self._client.send(request, stream=True)

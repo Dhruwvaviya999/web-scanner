@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         AuthorizationObservation,
         AuthorizationOutcome,
     )
+    from app.scanner.config_security.types import ConfigSecurityResult
     from app.scanner.session_security.types import SessionSecurityResult
 
 
@@ -145,6 +146,12 @@ class ScanReport:
     #: said about CSRF. Names, attributes and verdicts only — no token, no
     #: cookie value, no field contents. None until the stage has run.
     session_security: "SessionSecurityResult | None" = None
+    #: What configuration analysis observed: transport and HSTS, advertised
+    #: methods, debug markers, which bounded candidate paths were reachable,
+    #: directory listings, source maps, CSP quality and path handling. Paths,
+    #: counts, categories and verdicts only — never a file's contents, a
+    #: secret, a source line or a repository object. None until the stage runs.
+    config_security: "ConfigSecurityResult | None" = None
     #: Per-identity authorization observations, in memory for the length of the
     #: scan. They carry field *names* so the API security stage can ask the
     #: property-level question without repeating a request; nothing here is

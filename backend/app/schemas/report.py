@@ -172,6 +172,54 @@ class ReportSessionSecurityRead(BaseModel):
     )
 
 
+class ReportConfigSecurityRead(BaseModel):
+    """Configuration coverage. Structurally incapable of holding content.
+
+    Every field is a boolean or a count. There is no field for a response body,
+    a file's contents, an environment variable, a secret, a repository object
+    or a source line, because none of those reach this layer.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    analyzed: bool
+    https_used: bool
+    https_redirect: bool
+    hsts_observed: bool
+    method_observations: int
+    debug_indicators: int
+    sensitive_files_checked: int
+    sensitive_files_exposed: int
+    admin_endpoints_discovered: int = Field(
+        description=(
+            "Administrative paths that answered. Not by itself a weakness — many "
+            "applications correctly serve a login form at one."
+        )
+    )
+    management_endpoints_discovered: int
+    directory_listings: int
+    source_maps: int
+    technology_disclosures: int = Field(
+        description="Headers naming the stack. Informational; this is normal."
+    )
+    path_normalization_observations: int
+    candidates_not_tested: int = Field(
+        description=(
+            "Bounded candidate paths the request budget never reached. These "
+            "established nothing and must not be read as clean."
+        )
+    )
+    requests_sent: int
+    findings_count: int
+    budget_exhausted: bool
+    coverage_complete: bool = Field(
+        description=(
+            "False when a budget cut the candidate checks short, so silence about "
+            "the remainder is absence of evidence rather than evidence of absence."
+        )
+    )
+
+
 class ReportApiSurfaceRead(BaseModel):
     """The API attack surface. No response body, no credential, no header."""
 
@@ -282,6 +330,7 @@ class CoverageSummaryRead(BaseModel):
     api: ReportApiSurfaceRead
     api_security: ReportApiSecurityRead
     session_security: ReportSessionSecurityRead
+    config_security: ReportConfigSecurityRead
     authentication_usable: bool = Field(
         description=(
             "False when credentials were supplied and the target refused them, so "

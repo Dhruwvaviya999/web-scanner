@@ -244,6 +244,42 @@ class Scan(Base, TimestampMixin):
     )
     session_findings: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # --- Configuration and deployment security (phase 16) ---
+    # Counters and booleans only. There is deliberately no column here for a
+    # response body, a file's contents, an environment variable, a secret, a
+    # credential, a repository object or a source line: none of those reaches
+    # this layer, so none can be stored.
+    #
+    # NULL means the stage did not run, distinct from "ran and found nothing".
+    config_analyzed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    config_https_used: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    config_https_redirect: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    config_hsts_observed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    config_method_observations: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    config_debug_indicators: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    config_files_checked: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    config_files_exposed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    config_admin_endpoints: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    config_management_endpoints: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    config_directory_listings: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    config_source_maps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    config_technology_disclosures: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    config_path_observations: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: Candidates a budget stopped the stage from reaching. Not the same as
+    #: candidates that came back clean, and the report must not conflate them.
+    config_candidates_not_tested: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    config_requests_sent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    config_findings: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    config_budget_exhausted: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
     # --- Basic HTTP probe result ---
     # All nullable: a scan that failed, or has not run yet, has none of them.
     http_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)

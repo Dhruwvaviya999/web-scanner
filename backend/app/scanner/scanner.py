@@ -37,6 +37,8 @@ from app.scanner.types import (
     ScanModule,
     ScanReport,
 )
+from app.scanner.config_security.module import ConfigSecurityModule
+from app.scanner.config_security.types import ConfigSecurityConfig
 from app.scanner.session_security.module import SessionSecurityModule
 from app.scanner.session_security.types import SessionSecurityConfig
 from app.scanner.url_validator import parse_target_url
@@ -60,7 +62,11 @@ class WebScanner:
         api_config: ApiDiscoveryConfig | None = None,
         api_security_config: ApiSecurityConfig | None = None,
         session_config: SessionSecurityConfig | None = None,
+        config_security: ConfigSecurityConfig | None = None,
     ) -> None:
+        # Configuration and deployment analysis. Bounded GET/HEAD/OPTIONS
+        # against fixed candidate lists; no enumeration of any kind.
+        self._config_security = config_security or ConfigSecurityConfig()
         # Session analysis. Correlates cookies, URLs, forms and token metadata
         # the earlier stages already captured; sends nothing.
         self._session_config = session_config or SessionSecurityConfig()
@@ -162,6 +168,18 @@ class WebScanner:
                     self._session_config,
                     self._cancellation,
                     self._authentication.configured,
+                ),
+                # Last, and the only late stage that sends anything: it reads
+                # the transport and the captured responses every earlier stage
+                # produced, then requests a small fixed list of deployment
+                # paths through the same fetcher, origin lock and credential
+                # scoping as everything before it.
+                ConfigSecurityModule(
+                    self._config,
+                    self._config_security,
+                    self._cancellation,
+                    self._authentication,
+                    self._authorization,
                 ),
             ]
         )

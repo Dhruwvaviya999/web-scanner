@@ -275,6 +275,50 @@ class ReportSessionSecurity:
 
 
 @dataclass(frozen=True, slots=True)
+class ReportConfigSecurity:
+    """What configuration and deployment analysis observed.
+
+    Two fields decide how the rest should be read. `candidates_not_tested`
+    counts bounded candidate paths the request budget never reached, and
+    `budget_exhausted` says the budget is why. A scan that stopped early has
+    established nothing about what it did not check, and `coverage_complete`
+    exists so a partial result cannot be presented as a clean one.
+
+    Nothing here can hold content. Every field is a boolean or a count, because
+    the stage that fills them discards each response body inside the function
+    that read it.
+    """
+
+    analyzed: bool = False
+    https_used: bool = False
+    https_redirect: bool = False
+    hsts_observed: bool = False
+    method_observations: int = 0
+    debug_indicators: int = 0
+    sensitive_files_checked: int = 0
+    sensitive_files_exposed: int = 0
+    admin_endpoints_discovered: int = 0
+    management_endpoints_discovered: int = 0
+    directory_listings: int = 0
+    source_maps: int = 0
+    technology_disclosures: int = 0
+    path_normalization_observations: int = 0
+    candidates_not_tested: int = 0
+    requests_sent: int = 0
+    findings_count: int = 0
+    budget_exhausted: bool = False
+
+    @property
+    def coverage_complete(self) -> bool:
+        """Whether every candidate the stage meant to check was checked.
+
+        False means some were not, so silence about them is absence of
+        evidence rather than evidence of absence.
+        """
+        return self.analyzed and not self.budget_exhausted and not self.candidates_not_tested
+
+
+@dataclass(frozen=True, slots=True)
 class ReportMetadata:
     """What was scanned, when, and how the scan ended."""
 
@@ -358,6 +402,11 @@ class CoverageSummary:
     #: how much can honestly be said about CSRF. Passive throughout.
     session_security: ReportSessionSecurity = field(
         default_factory=lambda: ReportSessionSecurity()
+    )
+    #: Deployment and transport configuration. The only late stage that sends
+    #: requests, and the only one whose coverage can be cut short by a budget.
+    config_security: ReportConfigSecurity = field(
+        default_factory=lambda: ReportConfigSecurity()
     )
 
     @property
